@@ -335,7 +335,7 @@ def rescale(X, orig, new, in_place=False):
     return X
 
 class Dataset(object):
-    def __init__(self, args):
+    def __init__(self, args, load=True):
         crop_resize = (args.crop_size if (args.crop_resize is None)
                        else args.crop_resize)
         crop_sizes = list(set((args.crop_size, crop_resize)))
@@ -351,8 +351,9 @@ class Dataset(object):
                 # returns NHW float array in [0, 1]
                 return X.reshape(-1, crop, crop)
             self.grid_vis = grayscale_grid_vis
-            providers = mnist_data_providers(args.batch_size, crop_size=crop_sizes,
-                                             use_test_set=args.use_test_set)
+            if load:
+                providers = mnist_data_providers(args.batch_size, crop_size=crop_sizes,
+                                                 use_test_set=args.use_test_set)
         elif args.dataset in ('pong', 'spaceinv', 'seaquest',
                               'qbert', 'breakout', 'beamrider'):
             if args.dataset == 'pong':
@@ -378,7 +379,8 @@ class Dataset(object):
             def inverse_transform(X, crop=args.crop_resize):
                 return X.reshape(-1, nc, crop, crop).transpose(0, 2, 3, 1)
             self.grid_vis = rgba_grid_vis
-            providers = f_data_providers(args.batch_size, crop_size=crop_sizes)
+            if load:
+                providers = f_data_providers(args.batch_size, crop_size=crop_sizes)
         else:
             if args.dataset == 'imagenet':
                 from data import imagenet_data_providers as data_providers
@@ -448,9 +450,10 @@ class Dataset(object):
             else:
                 labels = None  # use all labels
                 self.ny = real_num_labels
-            providers = data_providers(args.batch_size, args.raw_size,
-                crop_sizes, root=root, num_test=num_test, labels=labels,
-                max_images=args.max_images)
+            if load:
+                providers = data_providers(args.batch_size, args.raw_size,
+                    crop_sizes, root=root, num_test=num_test, labels=labels,
+                    max_images=args.max_images)
             self.native_range = -1, 1
             def inverse_transform(X, crop=args.crop_resize):
                 # X (NCHW) \in [-1, 1] -> [0, 1]
@@ -458,9 +461,10 @@ class Dataset(object):
                 X = X.reshape(-1, self.nc, crop, crop).transpose(0, 2, 3, 1)
                 return rescale(X, self.native_range, (0, 1))
             self.grid_vis = color_grid_vis
-        all_providers = [providers[k] if k in providers else None
-                         for k in ('train', 'val', 'test')]
-        self.ntrain, self.nval, self.ntest = [0 if p is None else len(p.data)
-                                              for p in all_providers]
-        self.train_provider, self.val_provider, self.test_provider = all_providers
+        if load:
+            all_providers = [providers[k] if k in providers else None
+                             for k in ('train', 'val', 'test')]
+            self.ntrain, self.nval, self.ntest = [0 if p is None else len(p.data)
+                                                  for p in all_providers]
+            self.train_provider, self.val_provider, self.test_provider = all_providers
         self.inverse_transform = inverse_transform

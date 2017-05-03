@@ -259,7 +259,7 @@ crop = args.crop_size
 if args.crop_resize is None:
     args.crop_resize = crop
 
-dataset = data.Dataset(args)
+dataset = data.Dataset(args, load=False)
 ny, nc, inverse_transform = dataset.ny, dataset.nc, dataset.inverse_transform
 
 def transform(X, crop=args.crop_resize):
@@ -620,183 +620,8 @@ def batch_feats(f, X, nbatch=args.batch_size, wraparound=False):
         return out[0]
     return out
 
-global n_updates
-n_updates = 0
-t = time()
-total_niter = niter + niter_decay
-start_epoch = 0 if (args.resume is None) else args.resume
-total_niter = max(total_niter, start_epoch)  # at least run an eval
-iter_pad = len('%d'%total_niter)
-invk = int(args.k ** (-1) + 0.5)
-
-image_bytes = nc * args.crop_size * args.crop_size * 4
-# we'll create 16 megabatches (1x val data, 5x train data, 10x gen data)
-gigabyte = 1024 ** 3
-max_memory_per_megabatch = args.megabatch_gb * gigabyte
-max_images_per_megabatch = args.megabatch_images
-megabatch_size = min(max_images_per_megabatch,
-    int(max_memory_per_megabatch / float(image_bytes)))
-
-num_val = args.num_val_megabatch * megabatch_size
-print 'Getting %d val data' % num_val
-vaXImages, vaY = dataset.val_provider.get_data(num_val)
-if len(vaXImages) > 1:
-    vaXBigImages, vaXImages = vaXImages
-else:
-    vaXBigImages = vaXImages = vaXImages[0]
-num_train = args.num_train_megabatch * megabatch_size
-print 'Getting %d train data' % num_train
-trXImages, trY = dataset.train_provider.get_data(num_train)
-if len(trXImages) > 1:
-    trXBigImages, trXImages = trXImages
-else:
-    trXBigImages = trXImages = trXImages[0]
-
-print 'Getting samples'
-grid_shape = ny, dataset.num_vis_samples
-tr_idxs = np.arange(len(trY))
-sample_inds = [py_rng.sample(tr_idxs[trY==y], dataset.num_vis_samples)
-               for y in xrange(ny)]
-trXVisRaw = np.asarray([[trXImages[i] for i in sample_inds[y]]
-                        for y in xrange(ny)]).reshape(-1, nc, crop, crop)
-trYVisRaw = np.array([[y] * dataset.num_vis_samples for y in xrange(ny)],
-                     dtype=np.int32).reshape(-1)
-trXVis = inverse_transform(transform(
-    trXVisRaw.reshape(np.prod(grid_shape), -1)))
-dataset.grid_vis(trXVis, grid_shape,
-                 '%s/real.png' % (samples_dir,))
-if args.crop_size == args.crop_resize:
-    trXBigVisRaw, trXBigVis = trXVisRaw, trXVis
-else:
-    trXBigVisRaw = np.asarray([[trXBigImages[i] for i in sample_inds[y]]
-                               for y in xrange(ny)]).reshape(-1, nc, crop, crop)
-    trXBigVis = inverse_transform(transform(
-        trXBigVisRaw.reshape(np.prod(grid_shape), -1),
-        crop=args.crop_size), crop=args.crop_size)
-    dataset.grid_vis(trXBigVis, grid_shape,
-                     '%s/real_big.png' % (samples_dir,))
-print 'Done. Training...'
-
 def flat(X):
     return X.reshape(len(X), -1)
-
-mega_num_samples = args.num_sample_megabatch * megabatch_size
-eval_gen_z = dist.sample(num=mega_num_samples)
-gY = np.asarray(np_rng.randint(0, ny, mega_num_samples),
-                dtype=np.int32).flatten()
-eval_gen_inputs = list(eval_gen_z)
-
-target_num_samples = args.disp_samples
-num_sample_rows = 10
-num_sample_cols = max(1, target_num_samples // num_sample_rows)
-num_samples = num_sample_rows * num_sample_cols
-assert mega_num_samples >= num_samples
-
-sample_z = list(eval_gen_z)
-sample_y = np.array([[i] * num_sample_cols for i in range(ny)],
-                    dtype=np.int32).flatten()
-sample_inputs = list(sample_z)
-sample_inputs = [z[:num_samples] for z in sample_inputs]
-
-def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
-    start_time = time()
-    kwargs = dict(metric='euclidean')
-    cost_string = '  '.join('%s: %.4f' % o
-                            for o in zip(disp_costs.keys(), costs))
-    print '%*d) %s' % (iter_pad, epoch, cost_string)
-    outs = OrderedDict()
-    _feats = {}
-    def _get_feats(f, x):
-        key = f, id(x)
-        if key not in _feats:
-            _feats[key] = batch_feats(f, x)
-        return _feats[key]
-    def _nnc(inputs, labels, f=None):
-        assert len(inputs) == len(labels) == 2
-        if f is not None:
-            inputs = (_get_feats(f, x) for x in inputs)
-        (vaX, trX), (vaY, trY) = inputs, labels
-        return nnc_score(flat(trX), trY, flat(vaX), vaY, **kwargs)
-    gX = flat(batch_feats(_gen, eval_gen_inputs, wraparound=True))
-    nnd_sizes = [100, 10, 1]
-    nndVaXImages = flat(transform(vaXImages))
-    for subsample in nnd_sizes:
-        size = ng // subsample
-        gXsubset = gX[:size]
-        suffix = '' if (subsample == 1) else '/%d' % subsample
-        outs['NND' + suffix] = nnd_score(gXsubset, nndVaXImages, **kwargs)
-    labels = vaY, trY
-    images = vaXImages, trXImages
-    big_images = vaXBigImages, trXBigImages
-    if args.encode:
-        outs['NNC_e']  = _nnc(big_images, labels, f=_enc_l2distable)
-        outs['NNC_e-'] = _nnc(big_images, labels, f=_enc_feats)
-    if f_discrim is not None:
-        outs['NNC_d'] = _nnc(images, labels, f=_discrim_feats)
-    if args.classifier:
-        def accuracy(func, feat, Y):
-            return 100 * (batch_feats(func, feat).argmax(axis=1) == Y).mean()
-        if args.encode:
-            f = _get_feats(_enc_feats, big_images[0])
-            outs['CLS_e-'] = accuracy(_enc_preds, f, vaY)
-        if f_discrim is not None:
-            f = _get_feats(_discrim_feats, images[0])
-            outs['CLS_d'] = accuracy(_discrim_preds, f, vaY)
-    if args.encode:
-        def image_recon_error(enc_inputs, recon_sized_inputs=None):
-            def sqerr(a, b, axis):
-                return ((a - b) ** 2).sum(axis=axis) ** 0.5
-            def _f_error(enc_inputs, recon_sized_inputs):
-                gen_input = _enc_recon(enc_inputs)
-                recon = _gen(*gen_input)
-                if isinstance(recon_sized_inputs, list):
-                    recon_sized_inputs = recon_sized_inputs[0]
-                inputs = transform(recon_sized_inputs, crop=args.crop_resize)
-                axis = tuple(range(1, inputs.ndim))
-                error = sqerr(inputs, recon, axis=axis).reshape(-1, 1)
-                assert len(inputs) > 1
-                shifted_inputs = np.concatenate([inputs[1:], inputs[:1]], axis=0)
-                base_error = sqerr(shifted_inputs, recon, axis=axis).reshape(-1, 1)
-                return np.concatenate([error, base_error], axis=1)
-            if recon_sized_inputs is None:
-                recon_sized_inputs = enc_inputs
-            errors = batch_feats(_f_error, [enc_inputs, recon_sized_inputs],
-                                 wraparound=True)
-            return errors.mean(axis=0)
-        outs['EGr'], outs['EGr_b'] = image_recon_error(big_images[0], images[0])
-        if args.crop_size == args.crop_resize:
-            outs['EGg'], outs['EGg_b'] = image_recon_error(gen_output_to_enc_input(gX))
-    def format_str(key):
-        def is_prop(key, prop_metrics=['NNC', 'CLS']):
-            return any(key.startswith(m) for m in prop_metrics)
-        if key in ('El', 'El_r'):
-            return '%s: %.2e'
-        return '%s: %.2f' + ('%%' if is_prop(key) else '')
-    print '  '.join(format_str(k) % (k, v)
-                    for k, v in outs.iteritems())
-    samples = batch_feats(_gen, sample_inputs, wraparound=True)
-    sample_shape = num_sample_rows, num_sample_cols
-    def imname(tag=None):
-        tag = '' if (tag is None) else (tag + '.')
-        return '%s/%d.%spng' % (samples_dir, epoch, tag)
-    dataset.grid_vis(inverse_transform(samples), sample_shape, imname())
-    if args.encode:
-        if args.crop_size == args.crop_resize:
-            # pass the generator's samples back through encoder;
-            # then pass codes back through generator
-            enc_gen_inputs = gen_output_to_enc_input(samples)
-            samples_enc = batch_feats(_enc_recon, enc_gen_inputs, wraparound=True)
-            samples_regen = batch_feats(_gen, samples_enc, wraparound=True)
-            dataset.grid_vis(inverse_transform(samples_regen), sample_shape,
-                     imname('regen'))
-        assert trXVisRaw.dtype == np.uint8
-        enc_real_input = trXBigVisRaw
-        for func, name in [(_enc_recon, 'real_regen'), (_enc_sample, 'real_regen_s')]:
-            real_enc = batch_feats(func, enc_real_input, wraparound=True)
-            real_regen = batch_feats(_gen, real_enc, wraparound=True)
-            dataset.grid_vis(inverse_transform(real_regen), grid_shape, imname(name))
-    eval_time = time() - start_time
-    sys.stdout.write('Eval done. (%f seconds)\n' % eval_time)
 
 param_groups = dict(
     discrim=discrim_params,
@@ -804,12 +629,6 @@ param_groups = dict(
     gen=gen_params,
     encode=encode_params,
 )
-
-def save_params(epoch, groups=param_groups):
-    for key, param_list in groups.iteritems():
-        if len(param_list) == 0: continue
-        path = '%s/%d_%s_params.jl' % (model_dir, epoch, key)
-        joblib.dump([p.get_value() for p in param_list], path)
 
 def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
     if resume_epoch is not None:
@@ -834,87 +653,22 @@ def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
                                  % (shared.get_value().shape, saved.shape))
             shared.set_value(saved)
 
-def set_lr(epoch):
-    if epoch < niter:  # constant LR
-        value = lr
-    else:
-        if args.linear_decay:
-            # compute proportion_complete as (k-1)/n so that last epoch (n-1),
-            # has non-zero learning rate even if args.final_lr_mult == 0, per
-            # the default for linear decay.
-            proportion_complete = (epoch-niter) / float(niter_decay)
-            value = lr + proportion_complete * (final_lr - lr)
-        else:  # exponential decay
-            proportion_complete = (epoch-niter+1) / float(niter_decay)
-            log_value = log_lr + proportion_complete * (log_final_lr - log_lr)
-            value = np.exp(log_value)
-    lrt.set_value(floatX(value))
-
-def get_batch(deploy=False):
-    imb, ymb = dataset.train_provider.get_batch()
-    inputs = [i for i in imb]
-    if (deploy_label and deploy) or (train_label and not deploy):
-        inputs += [ymb]
-    inputs += dist.sample(num=len(inputs[0]))
-    return inputs
-
-def train_batch(inputs):
-    if update_both:
-        _train_gd(*inputs)
-        return
-    if ((args.k >= 1 and (n_updates % (args.k+1) == 0)) or
-        (args.k < 1 and (n_updates % (invk+1) != 0))):
-        _train_g(*inputs)
-    else:
-        _train_d(*inputs)
-
-def deploy():
-    # reset batch norm stat holders before computing stats with _deploy_update
-    for p, _ in deploy_updates:
-        value = p.get_value()
-        p.set_value(np.zeros(value.shape, dtype=value.dtype))
-    start_time = time()
-    sys.stdout.write('Running %d deploy update iterations...' % args.deploy_iters)
-    costs = np.mean([_deploy_update(*get_batch(deploy=True))
-                     for _ in xrange(args.deploy_iters)], axis=0)
-    deploy_time = time() - start_time
-    sys.stdout.write('done. (%f seconds)\n' % deploy_time)
-    return costs
-
-def train():
-    global n_updates
-    iters_per_epoch = int(np.ceil(dataset.ntrain/float(args.batch_size)))
-    save_epochs = frozenset([i for i in [niter, total_niter]
-                             if i > start_epoch])
-    disp_epochs = frozenset(list(save_epochs) +
-                            ([] if args.no_disp_one else [1]))
-    if args.disp_interval is None:
-        args.disp_interval = total_niter + 1
-    for epoch in xrange(start_epoch, total_niter + 1):
-        do_eval = (epoch % args.disp_interval == 0) or (epoch in disp_epochs)
-        do_save = (epoch in save_epochs) or (
-            (args.save_interval is not None) and
-            (epoch > start_epoch) and
-            (epoch % args.save_interval == 0)
-        )
-        if do_eval or do_save: costs = deploy()
-        if do_save: save_params(epoch)
-        if do_eval: eval_and_disp(epoch, costs)
-        if epoch == total_niter:
-            # on last iteration, only want to eval/disp/save;
-            # already trained the full total_niter iterations
-            break
-        set_lr(epoch)
-        start_time = time()
-        for index in xrange(iters_per_epoch):
-            inputs = get_batch()
-            train_batch(inputs)
-            n_updates += 1 + update_both
-        epoch_time = time() - start_time
-        print 'Epoch %d: %f seconds (LR = %g)' \
-              % (epoch, epoch_time, lrt.get_value())
-
 if __name__ == '__main__':
     if (args.weights is not None) or (args.resume is not None):
         load_params(weight_prefix=args.weights, resume_epoch=args.resume)
-    train()
+    grid_size = 10, 10
+    print 'Sampling z'
+    z = dist.sample(num=np.prod(grid_size))
+    print 'Computing generator samples G(z)'
+    gX = _gen(*z)
+    filename = 'gen_samples.png'
+    print 'Saving generator samples G(z) to:', filename
+    dataset.grid_vis(inverse_transform(gX), grid_size, filename)
+    if args.crop_size == args.crop_resize:
+        print 'Computing E(G(z))'
+        eZ = _enc_recon(gen_output_to_enc_input(gX))
+        print 'Computing reconstructions G(E(G(z)))'
+        gXrecon = _gen(*eZ)
+        filename = 'gen_recons.png'
+        print 'Saving reconstructions G(E(G(z))) to:', filename
+        dataset.grid_vis(inverse_transform(gXrecon), grid_size, filename)
