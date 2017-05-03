@@ -494,9 +494,7 @@ if args.encode:
 else:
     encode_params, encode_gen_params, e_updates = [], [], []
 
-g_updates = train_gen.net.get_updates(updater=updater,
-                                      extra_params=encode_gen_params)
-disp_costs.update(G=disp(train_gen.net.get_loss()))
+g_updates = []
 
 def set_mode(mode):
     for m in modules:
@@ -623,12 +621,7 @@ def batch_feats(f, X, nbatch=args.batch_size, wraparound=False):
 def flat(X):
     return X.reshape(len(X), -1)
 
-param_groups = dict(
-    discrim=discrim_params,
-    joint_discrim=joint_discrim_params,
-    gen=gen_params,
-    encode=encode_params,
-)
+param_groups = dict(gen=gen_params)
 
 def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
     if resume_epoch is not None:
@@ -664,11 +657,3 @@ if __name__ == '__main__':
     filename = 'gen_samples.png'
     print 'Saving generator samples G(z) to:', filename
     dataset.grid_vis(inverse_transform(gX), grid_size, filename)
-    if args.crop_size == args.crop_resize:
-        print 'Computing E(G(z))'
-        eZ = _enc_recon(gen_output_to_enc_input(gX))
-        print 'Computing reconstructions G(E(G(z)))'
-        gXrecon = _gen(*eZ)
-        filename = 'gen_recons.png'
-        print 'Saving reconstructions G(E(G(z))) to:', filename
-        dataset.grid_vis(inverse_transform(gXrecon), grid_size, filename)
