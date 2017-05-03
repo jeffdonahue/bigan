@@ -142,7 +142,7 @@ parser.add_argument('--dataset', default='mnist',
     help='Dataset (mnist/imagenet)')
 parser.add_argument('--raw_size', type=int,
     help='Raw minor edge size (for image datasets)')
-parser.add_argument('--crop_size', type=int,
+parser.add_argument('--crop_size', type=int, default=28,
     help='Crop size (for image datasets)')
 parser.add_argument('--crop_resize', type=int,
     help='Size of crop for D in, G out (E still takes crop_size resolution)')
