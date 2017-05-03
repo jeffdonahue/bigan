@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# Train on ImageNet with only 10 images, by default (use --max_labels 1000 to use the full dataset).
+# Train on ImageNet with only 10 classes, by default
+# (add "--max_labels 1000" to use the full dataset).
 
 NOISE="u-200"  # feature/noise (z) distribution is a 200-D uniform
 
@@ -13,7 +14,6 @@ OBJECTIVE="--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_di
 # Joint Latent Regressor (Joint LR) objective
 # OBJECTIVE="--encode_gen_weight 0.25 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0"
 
-NOISE="u-200"
 python train_gan.py \
     --encode --encode_normalize \
     --dataset imagenet --raw_size 72 --crop_size 64 \
