@@ -255,8 +255,9 @@ bnkwargs = dict(bnkwargs=dict(
     bias=(not args.nobias),
 ))
 
+crop = args.crop_size
 if args.crop_resize is None:
-    args.crop_resize = args.crop_size
+    args.crop_resize = crop
 
 dataset = data.Dataset(args)
 ny, nc, inverse_transform = dataset.ny, dataset.nc, dataset.inverse_transform
@@ -656,7 +657,6 @@ grid_shape = ny, dataset.num_vis_samples
 tr_idxs = np.arange(len(trY))
 sample_inds = [py_rng.sample(tr_idxs[trY==y], dataset.num_vis_samples)
                for y in xrange(ny)]
-crop = args.crop_resize
 trXVisRaw = np.asarray([[trXImages[i] for i in sample_inds[y]]
                         for y in xrange(ny)]).reshape(-1, nc, crop, crop)
 trYVisRaw = np.array([[y] * dataset.num_vis_samples for y in xrange(ny)],
@@ -668,7 +668,6 @@ dataset.grid_vis(trXVis, grid_shape,
 if args.crop_size == args.crop_resize:
     trXBigVisRaw, trXBigVis = trXVisRaw, trXVis
 else:
-    crop = args.crop_size
     trXBigVisRaw = np.asarray([[trXBigImages[i] for i in sample_inds[y]]
                                for y in xrange(ny)]).reshape(-1, nc, crop, crop)
     trXBigVis = inverse_transform(transform(
@@ -891,8 +890,6 @@ def train():
                             ([] if args.no_disp_one else [1]))
     if args.disp_interval is None:
         args.disp_interval = total_niter + 1
-    if (args.weights is not None) or (args.resume is not None):
-        load_params(weight_prefix=args.weights, resume_epoch=args.resume)
     for epoch in xrange(start_epoch, total_niter + 1):
         do_eval = (epoch % args.disp_interval == 0) or (epoch in disp_epochs)
         do_save = (epoch in save_epochs) or (
@@ -918,4 +915,6 @@ def train():
               % (epoch, epoch_time, lrt.get_value())
 
 if __name__ == '__main__':
+    if (args.weights is not None) or (args.resume is not None):
+        load_params(weight_prefix=args.weights, resume_epoch=args.resume)
     train()
