@@ -26,32 +26,14 @@ This directory should contain the MNIST data files (or symlinks to them) with th
     train-images.idx3-ubyte
     train-labels.idx1-ubyte
 
-Permutation-invariant MNIST training takes about 30 minutes on a Titan X GPU (400 epochs at ~3.3 seconds per epoch).
-The basic arguments used in all of the paper's permutation-invariant MNIST experiments are as follows:
-
-    NOISE="u-50"  # feature/noise (z) distribution is a 50-D uniform
-    ARGS=(
-        --encode --encode_normalize
-        --dataset mnist --crop_size 28
-        --encode_net mnist_mlp
-        --discrim_net mnist_mlp
-        --gen_net deconvnet_mnist_mlp
-        --megabatch_gb 0.5
-        --classifier --classifier_deploy
-        --nolog_gain --nogain --nobias --no_decay_gain
-        --deploy_iters 1000
-        --disp_samples 400
-        --disp_interval 25
-        --epochs 200 --decay_epochs 200
-        --optimizer adam
-        --noise ${NOISE}
-    )
+The `train_mnist.sh` script trains a "permutation-invariant" BiGAN (by default) on the MNIST dataset.
+MNIST training takes about 30 minutes on a Titan X GPU (400 epochs at ~3.3 seconds per epoch).
 
 ### BiGAN
 The BiGAN discriminator (or "joint discriminator") is enabled by setting a non-zero `joint_discrim_weight`.
 
-    OBJECTIVE=(--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_discrim_weight 1)
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/perminv_mnist_${NOISE}_bigan
+    OBJECTIVE="--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_discrim_weight 1"
+    ./train_mnist.sh $OBJECTIVE --exp_dir ./exp/perminv_mnist_u-50_bigan
 
 This should produce output like:
 
@@ -96,15 +78,15 @@ After training, the `samples` subdirectory of the directory specified in `--exp_
 To train a standard GAN, set a non-zero `discrim_weight`.
 To also learn a "latent regressor" encoder *E* by minimizing reconstruction error *L(z, E(G(z)))*, set a non-zero `encode_weight`.
 
-    OBJECTIVE=(--encode_gen_weight 0 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0)
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/perminv_mnist_${NOISE}_latentreg
+    OBJECTIVE="--encode_gen_weight 0 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0"
+    ./train_mnist.sh $OBJECTIVE --exp_dir ./exp/perminv_mnist_u-50_latentreg
 
 ### Standard GAN with Joint Latent Regressor (Joint LR)
 Finally, we can set a non-zero `encode_gen_weight` to jointly optimize the generator to both fool the discriminator and reconstruct *z* per the latent regressor loss.
 (Here we set the weight to 0.25; a weight of 1 results in a degenerate solution.)
 
-    OBJECTIVE=(--encode_gen_weight 0.25 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0)
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/perminv_mnist_${NOISE}_jointlatentreg
+    OBJECTIVE="--encode_gen_weight 0.25 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0"
+    ./train_mnist.sh $OBJECTIVE --exp_dir ./exp/perminv_mnist_u-50_jointlatentreg
 
 ## ImageNet
 
@@ -149,29 +131,12 @@ With an argument of `--raw_size 72` (for example), `train_gan.py` will automatic
 
 ### BiGAN (72 pixel images)
 
-The below commands show how to train a BiGAN with *AlexNet*-style encoder on ImageNet images from the first 10 classes (labels 0-9).
+`train_imagenet.sh` trains a BiGAN with *AlexNet*-style encoder on ImageNet images from the first 10 classes (labels 0-9).
 This takes about 3 hours using a Titan X GPU: 400 epochs at ~24 seconds per epoch.
 (Note that the first epoch may take much longer than 24 seconds due to compilation time.)
 
-    NOISE="u-200"
-    ARGS=(
-        --encode --encode_normalize
-        --dataset imagenet --raw_size 72 --crop_size 64
-        --gen_net_size 64
-        --feat_net_size 64
-        --encode_net alexnet_group_padpool
-        --megabatch_gb 0.5
-        --classifier --classifier_deploy
-        --nolog_gain --no_decay_gain
-        --deploy_iters 1000
-        --disp_samples 400
-        --max_labels 10 --epochs 200 --decay_epochs 200
-        --disp_interval 25 --save_interval 25
-        --noise ${NOISE}
-    )
-    OBJECTIVE=(--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_discrim_weight 1)
-
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_10_size72_${NOISE}_bigan
+    OBJECTIVE="--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_discrim_weight 1"
+    ./train_imagenet.sh $OBJECTIVE --exp_dir ./exp/imagenet_10_size72_u-200_bigan
 
 You should see output like the following:
 
@@ -198,22 +163,21 @@ For better results, train with 100 classes (`--max_labels 100`).
 With more classes, each epoch takes proportionately longer,
 so we suggest also training for fewer epochs and evaluating/saving more frequently:
 
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_100_size72_${NOISE}_bigan \
+    ./train_imagenet.sh $OBJECTIVE --exp_dir ./exp/imagenet_100_size72_u-200_bigan \
         --max_labels 100 --epochs 100 --decay_epochs 100 --disp_interval 5 --save_interval 10
 
 In the paper, we train on the full dataset (`--max_labels 1000`) as follows:
 
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_1000_size72_${NOISE}_bigan \
+    ./train_imagenet.sh $OBJECTIVE --exp_dir ./exp/imagenet_1000_size72_u-200_bigan \
         --max_labels 1000 --epochs 50 --decay_epochs 50 --disp_interval 1 --save_interval 5
 
 ### Generalized BiGAN (128 pixel images)
 
-Starting from the above arguments, the following code can be used to train a "generalized BiGAN" with 112 pixel images input to the encoder, while the generator output and discriminator input remain 64 pixel images.
-The only difference is that we append the arguments `--raw_size 128 --crop_size 112 --crop_resize 64` specifying the larger encoder input size.
+A "generalized BiGAN" can be trained with higher resolution images input to the encoder, while the generator output and discriminator input remain lower resolution.
+The only difference is that we append the arguments `--raw_size 128 --crop_size 112 --crop_resize 64` specifying the larger encoder input size (see `train_imagenet_highres_encoder.sh`).
 Due to the higher resolution encoder inputs, a single training epoch takes a bit longer: ~28 seconds on a Titan X (vs. ~24 seconds for a standard BiGAN).
 
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_10_size128_resize64_${NOISE}_bigan \
-        --raw_size 128 --crop_size 112 --crop_resize 64
+    ./train_imagenet_highres_encoder.sh --exp_dir ./exp/imagenet_10_size128_resize64_u-200_bigan
 
 You should see output like the following:
 
@@ -253,14 +217,13 @@ To download and install these weights at the locations assumed in `eval_model.sh
 You can test that the weights work by "resuming" training at epoch 100 with the `--resume` flag:
 
     # standard BiGAN
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_1000_size72_${NOISE}_bigan \
-        --max_labels 1000 --epochs 50 --decay_epochs 50 --disp_interval 1 --save_interval 5 \
+    ./train_imagenet.sh --exp_dir ./exp/imagenet_1000_size72_u-200_bigan \
+        --max_labels 1000 --epochs 50 --decay_epochs 50 --disp_interval 1 \
         --resume 100
 
     # generalized BiGAN
-    python train_gan.py $ARGS $OBJECTIVE --exp_dir ./exp/imagenet_1000_size128_resize64_${NOISE}_bigan \
-        --max_labels 1000 --epochs 50 --decay_epochs 50 --disp_interval 1 --save_interval 5 \
-        --raw_size 128 --crop_size 112 --crop_resize 64 \
+    ./train_imagenet_highres_encoder.sh --exp_dir ./exp/imagenet_1000_size128_resize64_u-200_bigan \
+        --max_labels 1000 --epochs 50 --decay_epochs 50 --disp_interval 1 \
         --resume 100
 
 This should perform a single evaluation and display roughly the following output:
