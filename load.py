@@ -9,12 +9,13 @@ import random
 from matplotlib import pyplot as plt
 
 from lib.data_utils import shuffle
-from lib.config import data_dir
+
+data_dir = './data/mnist'
 
 def mnist():
     fd = open(os.path.join(data_dir,'train-images.idx3-ubyte'))
     loaded = np.fromfile(file=fd,dtype=np.uint8)
-    trX = loaded[16:].reshape((60000,28*28)).astype(float)
+    trX = loaded[16:].reshape((60000,28*28))
 
     fd = open(os.path.join(data_dir,'train-labels.idx1-ubyte'))
     loaded = np.fromfile(file=fd,dtype=np.uint8)
@@ -22,7 +23,7 @@ def mnist():
 
     fd = open(os.path.join(data_dir,'t10k-images.idx3-ubyte'))
     loaded = np.fromfile(file=fd,dtype=np.uint8)
-    teX = loaded[16:].reshape((10000,28*28)).astype(float)
+    teX = loaded[16:].reshape((10000,28*28))
 
     fd = open(os.path.join(data_dir,'t10k-labels.idx1-ubyte'))
     loaded = np.fromfile(file=fd,dtype=np.uint8)

@@ -3,7 +3,8 @@ import theano.tensor as T
 import numpy as np
 
 from theano_utils import shared0s, floatX, sharedX
-from ops import l2norm
+
+from metrics import l2norm
 
 def clip_norm(g, c, n):
     if c > 0:
@@ -16,7 +17,9 @@ def clip_norms(gs, c):
 
 class Regularizer(object):
 
-    def __init__(self, l1=0., l2=0., maxnorm=0., l2norm=False, frobnorm=False):
+    def __init__(self, l1=0., l2=0., maxnorm=0., l2norm=False, frobnorm=False,
+                 ignored_prefixes=[]):
+        ignored_prefixes = set(ignored_prefixes)
         self.__dict__.update(locals())
 
     def max_norm(self, p, maxnorm):
@@ -32,12 +35,23 @@ class Regularizer(object):
     def frob_norm(self, p, nrows):
         return (p/T.sqrt(T.sum(T.sqr(p))))*T.sqrt(nrows)
 
+    def ignored(self, p):
+        return (p.name is not None) and \
+            (any(p.name.startswith(pre) for pre in self.ignored_prefixes) or
+             any((('/' + pre) in p.name) for pre in self.ignored_prefixes))
+
     def gradient_regularize(self, p, g):
-        g += p * self.l2
-        g += T.sgn(p) * self.l1
+        if self.ignored(p):
+            return g
+        if self.l2 != 0:
+            g += p * self.l2
+        if self.l1 != 0:
+            g += T.sgn(p) * self.l1
         return g
 
     def weight_regularize(self, p):
+        if self.ignored(p):
+            return p
         p = self.max_norm(p, self.maxnorm)
         if self.l2norm:
             p = self.l2_norm(p)
@@ -83,7 +97,10 @@ class Momentum(Update):
         grads = clip_norms(grads, self.clipnorm)
         for p,g in zip(params,grads):
             g = self.regularizer.gradient_regularize(p, g)
-            m = theano.shared(p.get_value() * 0.)
+            value = p.get_value() * 0.
+            if p.dtype == theano.config.floatX:
+                value = floatX(value)
+            m = theano.shared(value)
             v = (self.momentum * m) - (self.lr * g)
             updates.append((m, v))
 
@@ -147,24 +164,28 @@ class Adam(Update):
         updates = []
         grads = T.grad(cost, params)
         grads = clip_norms(grads, self.clipnorm)  
-        t = theano.shared(floatX(1.))
-        b1_t = self.b1*self.l**(t-1)
+        t = theano.shared(floatX(0.))
+        b1_t = self.b1*self.l**t
+        tp1 = t + 1.
      
         for p, g in zip(params, grads):
             g = self.regularizer.gradient_regularize(p, g)
-            m = theano.shared(p.get_value() * 0.)
-            v = theano.shared(p.get_value() * 0.)
+            value = p.get_value() * 0.
+            if p.dtype == theano.config.floatX:
+                value = floatX(value)
+            m = theano.shared(value)
+            v = theano.shared(value)
      
             m_t = b1_t*m + (1 - b1_t)*g
             v_t = self.b2*v + (1 - self.b2)*g**2
-            m_c = m_t / (1-self.b1**t)
-            v_c = v_t / (1-self.b2**t)
+            m_c = m_t / (1-self.b1**tp1)
+            v_c = v_t / (1-self.b2**tp1)
             p_t = p - (self.lr * m_c) / (T.sqrt(v_c) + self.e)
             p_t = self.regularizer.weight_regularize(p_t)
             updates.append((m, m_t))
             updates.append((v, v_t))
             updates.append((p, p_t) )
-        updates.append((t, t + 1.))
+        updates.append((t, tp1))
         return updates
 
 

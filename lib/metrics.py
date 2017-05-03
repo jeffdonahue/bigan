@@ -6,12 +6,30 @@ import gc
 import time
 
 from theano_utils import floatX
-from ops import euclidean, cosine
 
 from sklearn import metrics
 from sklearn.linear_model import LogisticRegression as LR
 
-def cv_reg_lr(trX, trY, vaX, vaY, Cs=[0.01, 0.05, 0.1, 0.5, 1., 5., 10., 50., 100.]):
+def l2norm(x, axis=1, e=1e-8, keepdims=True):
+    return T.sqrt(T.sum(T.sqr(x), axis=axis, keepdims=keepdims) + e)
+
+def cosine(x, y):
+    d = T.dot(x, y.T)
+    d /= l2norm(x).dimshuffle(0, 'x')
+    d /= l2norm(y).dimshuffle('x', 0)
+    return d
+
+def euclidean(x, y, e=1e-8):
+    xx = T.sqr(T.sqrt((x*x).sum(axis=1) + e))
+    yy = T.sqr(T.sqrt((y*y).sum(axis=1) + e))
+    dist = T.dot(x, y.T)
+    dist *= -2
+    dist += xx.dimshuffle(0, 'x')
+    dist += yy.dimshuffle('x', 0)
+    dist = T.sqrt(dist)
+    return dist
+
+def cv_reg_lr(trX, trY, vaX, vaY, Cs=[0.01, 0.05, 0.1, 0.5, 1., 5., 10., 50., 100.], return_score=True):
     tr_accs = []
     va_accs = []
     models = []
@@ -22,11 +40,13 @@ def cv_reg_lr(trX, trY, vaX, vaY, Cs=[0.01, 0.05, 0.1, 0.5, 1., 5., 10., 50., 10
         va_pred = model.predict(vaX)
         tr_acc = metrics.accuracy_score(trY, tr_pred)
         va_acc = metrics.accuracy_score(vaY, va_pred)
-        print '%.4f %.4f %.4f'%(C, tr_acc, va_acc)
+        if not return_score:
+            print '%.4f %.4f %.4f'%(C, tr_acc, va_acc)
         tr_accs.append(tr_acc)
         va_accs.append(va_acc)
         models.append(model)
     best = np.argmax(va_accs)
+    if return_score: return 100*va_accs[best]
     print 'best model C: %.4f tr_acc: %.4f va_acc: %.4f'%(Cs[best], tr_accs[best], va_accs[best])
     return models[best]
 
