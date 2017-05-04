@@ -174,8 +174,8 @@ parser.add_argument('--decay', type=float, default=2.5e-5,
     help='L2 weight decay')
 parser.add_argument('--discrim_decay', type=float,
     help='L2 weight decay for the discriminator (defaults to --decay)')
-parser.add_argument('--sgd_momentum', type=float, default=0.9,
-    help='Momentum coeff for SGD')
+parser.add_argument('--momentum', type=float, default=0.5,
+    help='Momentum coeff for Adam/SGD')
 parser.add_argument('--epochs', type=int, default=50,
     help='Number of epochs to train before beginning LR decay '
          '(doubled if k != 1)')
@@ -286,21 +286,8 @@ def gen_output_to_enc_input(gX):
     gX[gX > 255] = 255
     return np.array(gX, dtype=np.uint8)
 
-pred_log_var = False
-b1 = 0.5          # momentum term of adam
-niter = args.epochs       # # of iter at starting learning rate
-niter_decay = args.decay_epochs # # of iter to linearly decay learning rate
-lr = args.learning_rate       # initial learning rate for adam
 if args.final_lr_mult is None:
     args.final_lr_mult = 0 if args.linear_decay else 0.01
-final_lr = args.final_lr_mult * lr
-assert 0 <= final_lr <= lr
-if not args.linear_decay:
-    # exponential decay
-    assert final_lr > 0, \
-        'For exponential decay, final LR must be strictly positive (> 0)'
-    log_lr = np.log(lr)
-    log_final_lr = np.log(final_lr)
 
 model_dir = '%s/models'%(args.exp_dir,)
 samples_dir = '%s/samples'%(args.exp_dir,)
@@ -351,16 +338,16 @@ train_gen = gan.Generator(**gen_kwargs)
 gX = train_gen.data
 gXtest = gan.Generator(source=train_gen.net, mode='test', **gen_kwargs).data
 
-lrt = sharedX(lr)
+lrt = sharedX(args.learning_rate)
 
 def get_updater(optimizer, **kwargs):
     opt_map = dict(adam='Adam', sgd='Momentum', rms='RMSprop')
     if optimizer not in opt_map:
         raise ValueError('Unknown optimizer: %s' % (optimizer,))
     if optimizer == 'adam':
-        kwargs.update(b1=b1)
+        kwargs.update(b1=args.momentum)
     elif optimizer == 'sgd':
-        kwargs.update(momentum=args.sgd_momentum)
+        kwargs.update(momentum=args.momentum)
     opt_func = getattr(updates, opt_map[optimizer])
     return opt_func(**kwargs)
 
@@ -534,10 +521,12 @@ if deploy_label:
     deploy_inputs += [Y]
 deploy_inputs += Z
 deploy_updates = []
-[deploy_updates.extend(n.get_deploy_updates()) for n in nets]
+for n in nets: deploy_updates.extend(n.get_deploy_updates())
 _deploy_update = lazy_function(deploy_inputs, disp_costs.values(),
                                updates=deploy_updates)
 update_both = (not args.no_update_both) and (args.k == 1)
+niter = args.epochs # # of iter at starting learning rate
+niter_decay = args.decay_epochs # # of iter to decay learning rate
 if update_both:
     all_updates = g_updates + d_updates + e_updates
     _train_gd = lazy_function(inputs, [], updates=all_updates,
@@ -571,7 +560,7 @@ if args.encode:
         _enc_preds = lazy_function([enc_feats.value],
                                    enc_label_preds.value)
 
-def batch_feats(f, X, nbatch=args.batch_size, wraparound=False):
+def batch_map(f, X, nbatch=args.batch_size, wraparound=False):
     """ wraparound=True makes sure all batches have exactly nbatch items,
         wrapping around to the beginning to grab enough extras to fill the
         last batch, if needed."""
@@ -620,14 +609,9 @@ def batch_feats(f, X, nbatch=args.batch_size, wraparound=False):
         return out[0]
     return out
 
-global n_updates
-n_updates = 0
-t = time()
 total_niter = niter + niter_decay
 start_epoch = 0 if (args.resume is None) else args.resume
 total_niter = max(total_niter, start_epoch)  # at least run an eval
-iter_pad = len('%d'%total_niter)
-invk = int(args.k ** (-1) + 0.5)
 
 image_bytes = nc * args.crop_size * args.crop_size * 4
 # we'll create 16 megabatches (1x val data, 5x train data, 10x gen data)
@@ -658,23 +642,17 @@ tr_idxs = np.arange(len(trY))
 sample_inds = [py_rng.sample(tr_idxs[trY==y], dataset.num_vis_samples)
                for y in xrange(ny)]
 trXVisRaw = np.asarray([[trXImages[i] for i in sample_inds[y]]
-                        for y in xrange(ny)]).reshape(-1, nc, crop, crop)
-trYVisRaw = np.array([[y] * dataset.num_vis_samples for y in xrange(ny)],
-                     dtype=np.int32).reshape(-1)
-trXVis = inverse_transform(transform(
-    trXVisRaw.reshape(np.prod(grid_shape), -1)))
-dataset.grid_vis(trXVis, grid_shape,
-                 '%s/real.png' % (samples_dir,))
+                        for y in xrange(ny)]).reshape(
+                            -1, nc, args.crop_resize, args.crop_resize)
+trXVis = inverse_transform(transform(trXVisRaw))
+dataset.grid_vis(trXVis, grid_shape, '%s/real.png' % (samples_dir,))
 if args.crop_size == args.crop_resize:
-    trXBigVisRaw, trXBigVis = trXVisRaw, trXVis
+    trXBigVisRaw = trXVisRaw
 else:
     trXBigVisRaw = np.asarray([[trXBigImages[i] for i in sample_inds[y]]
                                for y in xrange(ny)]).reshape(-1, nc, crop, crop)
-    trXBigVis = inverse_transform(transform(
-        trXBigVisRaw.reshape(np.prod(grid_shape), -1),
-        crop=args.crop_size), crop=args.crop_size)
-    dataset.grid_vis(trXBigVis, grid_shape,
-                     '%s/real_big.png' % (samples_dir,))
+    trXBigVis = inverse_transform(transform(trXBigVisRaw, crop=crop), crop=crop)
+    dataset.grid_vis(trXBigVis, grid_shape, '%s/real_big.png' % (samples_dir,))
 print 'Done. Training...'
 
 def flat(X):
@@ -703,13 +681,13 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
     kwargs = dict(metric='euclidean')
     cost_string = '  '.join('%s: %.4f' % o
                             for o in zip(disp_costs.keys(), costs))
-    print '%*d) %s' % (iter_pad, epoch, cost_string)
+    print '%*d) %s' % (len('%d'%total_niter), epoch, cost_string)
     outs = OrderedDict()
     _feats = {}
     def _get_feats(f, x):
         key = f, id(x)
         if key not in _feats:
-            _feats[key] = batch_feats(f, x)
+            _feats[key] = batch_map(f, x)
         return _feats[key]
     def _nnc(inputs, labels, f=None):
         assert len(inputs) == len(labels) == 2
@@ -717,7 +695,7 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
             inputs = (_get_feats(f, x) for x in inputs)
         (vaX, trX), (vaY, trY) = inputs, labels
         return nnc_score(flat(trX), trY, flat(vaX), vaY, **kwargs)
-    gX = flat(batch_feats(_gen, eval_gen_inputs, wraparound=True))
+    gX = flat(batch_map(_gen, eval_gen_inputs, wraparound=True))
     nnd_sizes = [100, 10, 1]
     nndVaXImages = flat(transform(vaXImages))
     for subsample in nnd_sizes:
@@ -735,7 +713,7 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
         outs['NNC_d'] = _nnc(images, labels, f=_discrim_feats)
     if args.classifier:
         def accuracy(func, feat, Y):
-            return 100 * (batch_feats(func, feat).argmax(axis=1) == Y).mean()
+            return 100 * (batch_map(func, feat).argmax(axis=1) == Y).mean()
         if args.encode:
             f = _get_feats(_enc_feats, big_images[0])
             outs['CLS_e-'] = accuracy(_enc_preds, f, vaY)
@@ -744,7 +722,7 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
             outs['CLS_d'] = accuracy(_discrim_preds, f, vaY)
     if args.encode:
         def image_recon_error(enc_inputs, recon_sized_inputs=None):
-            def sqerr(a, b, axis):
+            def l2err(a, b, axis):
                 return ((a - b) ** 2).sum(axis=axis) ** 0.5
             def _f_error(enc_inputs, recon_sized_inputs):
                 gen_input = _enc_recon(enc_inputs)
@@ -753,15 +731,15 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
                     recon_sized_inputs = recon_sized_inputs[0]
                 inputs = transform(recon_sized_inputs, crop=args.crop_resize)
                 axis = tuple(range(1, inputs.ndim))
-                error = sqerr(inputs, recon, axis=axis).reshape(-1, 1)
+                error = l2err(inputs, recon, axis=axis).reshape(-1, 1)
                 assert len(inputs) > 1
                 shifted_inputs = np.concatenate([inputs[1:], inputs[:1]], axis=0)
-                base_error = sqerr(shifted_inputs, recon, axis=axis).reshape(-1, 1)
+                base_error = l2err(shifted_inputs, recon, axis=axis).reshape(-1, 1)
                 return np.concatenate([error, base_error], axis=1)
             if recon_sized_inputs is None:
                 recon_sized_inputs = enc_inputs
-            errors = batch_feats(_f_error, [enc_inputs, recon_sized_inputs],
-                                 wraparound=True)
+            errors = batch_map(_f_error, [enc_inputs, recon_sized_inputs],
+                               wraparound=True)
             return errors.mean(axis=0)
         outs['EGr'], outs['EGr_b'] = image_recon_error(big_images[0], images[0])
         if args.crop_size == args.crop_resize:
@@ -769,12 +747,10 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
     def format_str(key):
         def is_prop(key, prop_metrics=['NNC', 'CLS']):
             return any(key.startswith(m) for m in prop_metrics)
-        if key in ('El', 'El_r'):
-            return '%s: %.2e'
         return '%s: %.2f' + ('%%' if is_prop(key) else '')
     print '  '.join(format_str(k) % (k, v)
                     for k, v in outs.iteritems())
-    samples = batch_feats(_gen, sample_inputs, wraparound=True)
+    samples = batch_map(_gen, sample_inputs, wraparound=True)
     sample_shape = num_sample_rows, num_sample_cols
     def imname(tag=None):
         tag = '' if (tag is None) else (tag + '.')
@@ -785,15 +761,14 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
             # pass the generator's samples back through encoder;
             # then pass codes back through generator
             enc_gen_inputs = gen_output_to_enc_input(samples)
-            samples_enc = batch_feats(_enc_recon, enc_gen_inputs, wraparound=True)
-            samples_regen = batch_feats(_gen, samples_enc, wraparound=True)
+            samples_enc = batch_map(_enc_recon, enc_gen_inputs, wraparound=True)
+            samples_regen = batch_map(_gen, samples_enc, wraparound=True)
             dataset.grid_vis(inverse_transform(samples_regen), sample_shape,
                      imname('regen'))
         assert trXVisRaw.dtype == np.uint8
-        enc_real_input = trXBigVisRaw
         for func, name in [(_enc_recon, 'real_regen'), (_enc_sample, 'real_regen_s')]:
-            real_enc = batch_feats(func, enc_real_input, wraparound=True)
-            real_regen = batch_feats(_gen, real_enc, wraparound=True)
+            real_enc = batch_map(func, trXBigVisRaw, wraparound=True)
+            real_regen = batch_map(_gen, real_enc, wraparound=True)
             dataset.grid_vis(inverse_transform(real_regen), grid_shape, imname(name))
     eval_time = time() - start_time
     sys.stdout.write('Eval done. (%f seconds)\n' % eval_time)
@@ -834,10 +809,12 @@ def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
                                  % (shared.get_value().shape, saved.shape))
             shared.set_value(saved)
 
-def set_lr(epoch):
+def set_lr(epoch, lr=args.learning_rate,
+           final_lr=args.final_lr_mult*args.learning_rate):
     if epoch < niter:  # constant LR
         value = lr
     else:
+        assert 0 <= final_lr <= lr
         if args.linear_decay:
             # compute proportion_complete as (k-1)/n so that last epoch (n-1),
             # has non-zero learning rate even if args.final_lr_mult == 0, per
@@ -845,8 +822,11 @@ def set_lr(epoch):
             proportion_complete = (epoch-niter) / float(niter_decay)
             value = lr + proportion_complete * (final_lr - lr)
         else:  # exponential decay
+            assert final_lr > 0, \
+                'For exponential decay, final LR must be strictly positive (> 0)'
             proportion_complete = (epoch-niter+1) / float(niter_decay)
-            log_value = log_lr + proportion_complete * (log_final_lr - log_lr)
+            log_value = np.log(lr) + \
+                proportion_complete * (np.log(final_lr) - np.log(lr))
             value = np.exp(log_value)
     lrt.set_value(floatX(value))
 
@@ -858,7 +838,8 @@ def get_batch(deploy=False):
     inputs += dist.sample(num=len(inputs[0]))
     return inputs
 
-def train_batch(inputs):
+invk = int(args.k ** (-1) + 0.5)
+def train_batch(inputs, n_updates):
     if update_both:
         _train_gd(*inputs)
         return
@@ -871,8 +852,7 @@ def train_batch(inputs):
 def deploy():
     # reset batch norm stat holders before computing stats with _deploy_update
     for p, _ in deploy_updates:
-        value = p.get_value()
-        p.set_value(np.zeros(value.shape, dtype=value.dtype))
+        p.set_value(0 * p.get_value())
     start_time = time()
     sys.stdout.write('Running %d deploy update iterations...' % args.deploy_iters)
     costs = np.mean([_deploy_update(*get_batch(deploy=True))
@@ -882,7 +862,7 @@ def deploy():
     return costs
 
 def train():
-    global n_updates
+    n_updates = 0
     iters_per_epoch = int(np.ceil(dataset.ntrain/float(args.batch_size)))
     save_epochs = frozenset([i for i in [niter, total_niter]
                              if i > start_epoch])
@@ -908,7 +888,7 @@ def train():
         start_time = time()
         for index in xrange(iters_per_epoch):
             inputs = get_batch()
-            train_batch(inputs)
+            train_batch(inputs, n_updates)
             n_updates += 1 + update_both
         epoch_time = time() - start_time
         print 'Epoch %d: %f seconds (LR = %g)' \
