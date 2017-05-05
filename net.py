@@ -281,8 +281,7 @@ def conv_kwargs(stride, pad):
 
 class Conv(Layer):
     def get_output(self, h, nout=None, ksize=1, stride=1, pad='SAME', group=1,
-                   stddev=None):
-        from theano.sandbox.cuda.dnn import dnn_conv
+                   stddev=None, filter_flip=True):
         if nout is None:
             raise ValueError('nout must be provided')
         h, h_shape = h.value, h.shape
@@ -296,6 +295,7 @@ class Conv(Layer):
         W = self.weights((nout, nin // group, ksize, ksize),
                          stddev=stddev, nin_axis=[1, 2, 3])
         pad = get_pad(pad, ksize)
+        subsample = stride, stride
         outs = []
         for g in xrange(group):
             if group > 1:
@@ -306,7 +306,8 @@ class Conv(Layer):
             else:
                 w = W
                 hi = h
-            outs.append(dnn_conv(hi, w, **conv_kwargs(stride, pad)))
+            outs.append(T.nnet.conv2d(hi, w, border_mode=pad,
+                subsample=subsample, filter_flip=filter_flip))
         if len(outs) == 1:
             out = outs[0]
         else:
@@ -314,21 +315,14 @@ class Conv(Layer):
         return Output(out)
 
 def deconv(h, w, subsample=(1, 1), border_mode=(0, 0), out_dims=None,
-           conv_mode='conv'):
-    """
-    sets up dummy convolutional forward pass and uses its grad as deconv
-    currently only tested/working with same padding
-    """
-    import theano.sandbox.cuda.dnn as dnn
-    h = dnn.gpu_contiguous(h)
-    w = dnn.gpu_contiguous(w)
+           filter_flip=True):
     if out_dims is None:
         out_dims = h.shape[2] * subsample[0], h.shape[3] * subsample[1]
     assert len(out_dims) == 2
-    out = dnn.gpu_alloc_empty(h.shape[0], w.shape[1], *out_dims)
-    desc = dnn.GpuDnnConvDesc(border_mode=border_mode, subsample=subsample,
-                              conv_mode=conv_mode)(out.shape, w.shape)
-    return dnn.GpuDnnConvGradI()(w, h, out, desc)
+    out_shape = (None, None) + out_dims
+    op = T.nnet.abstract_conv.AbstractConv2d_gradInputs(imshp=out_shape,
+        border_mode=border_mode, subsample=subsample, filter_flip=filter_flip)
+    return op(w, h, out_dims)
 
 class Deconv(Layer):
     def get_output(self, h, nout=None, ksize=1, stride=1, pad='SAME',
