@@ -281,7 +281,8 @@ def conv_kwargs(stride, pad):
 
 class Conv(Layer):
     def get_output(self, h, nout=None, ksize=1, stride=1, pad='SAME', group=1,
-                   stddev=None, filter_flip=True):
+                   stddev=None):
+        from theano.sandbox.cuda.dnn import dnn_conv
         if nout is None:
             raise ValueError('nout must be provided')
         h, h_shape = h.value, h.shape
@@ -295,7 +296,6 @@ class Conv(Layer):
         W = self.weights((nout, nin // group, ksize, ksize),
                          stddev=stddev, nin_axis=[1, 2, 3])
         pad = get_pad(pad, ksize)
-        subsample = stride, stride
         outs = []
         for g in xrange(group):
             if group > 1:
@@ -306,8 +306,7 @@ class Conv(Layer):
             else:
                 w = W
                 hi = h
-            outs.append(T.nnet.conv2d(hi, w, border_mode=pad,
-                subsample=subsample, filter_flip=filter_flip))
+            outs.append(dnn_conv(hi, w, **conv_kwargs(stride, pad)))
         if len(outs) == 1:
             out = outs[0]
         else:
@@ -315,14 +314,21 @@ class Conv(Layer):
         return Output(out)
 
 def deconv(h, w, subsample=(1, 1), border_mode=(0, 0), out_dims=None,
-           filter_flip=True):
+           conv_mode='conv'):
+    """
+    sets up dummy convolutional forward pass and uses its grad as deconv
+    currently only tested/working with same padding
+    """
+    import theano.sandbox.cuda.dnn as dnn
+    h = dnn.gpu_contiguous(h)
+    w = dnn.gpu_contiguous(w)
     if out_dims is None:
         out_dims = h.shape[2] * subsample[0], h.shape[3] * subsample[1]
     assert len(out_dims) == 2
-    out_shape = (None, None) + out_dims
-    op = T.nnet.abstract_conv.AbstractConv2d_gradInputs(imshp=out_shape,
-        border_mode=border_mode, subsample=subsample, filter_flip=filter_flip)
-    return op(w, h, out_dims)
+    out = dnn.gpu_alloc_empty(h.shape[0], w.shape[1], *out_dims)
+    desc = dnn.GpuDnnConvDesc(border_mode=border_mode, subsample=subsample,
+                              conv_mode=conv_mode)(out.shape, w.shape)
+    return dnn.GpuDnnConvGradI()(w, h, out, desc)
 
 class Deconv(Layer):
     def get_output(self, h, nout=None, ksize=1, stride=1, pad='SAME',
@@ -605,11 +611,26 @@ class Net(object):
     layer_types = {k: v for k, v in globals().iteritems()
                    if isinstance(v, type) and issubclass(v, Layer)}
 
-    def __init__(self, source=None, name=None):
+    def __init__(self, source=None, name=None,
+                 baseline_type=0, loss_scale=1, loss_clip=None):
         self.name = name
         self.name_prefix = '' if (name is None) else ('%s/' % name)
         if source is not None:
             assert name == source.name
+
+        self.baseline_type = baseline_type
+        self.loss_scale = float(loss_scale)
+        """loss_clip should be None, a single float, or a pair of floats."""
+        if loss_clip is None:
+            loss_clip = 'inf'
+        try:
+            self.loss_clip = -float(loss_clip), +float(loss_clip)
+        except TypeError:
+            self.loss_clip = tuple(float(l) for l in loss_clip)
+            if len(self.loss_clip) == 1:
+                self.loss_clip = -self.loss_clip[0], +self.loss_clip[0]
+        assert len(self.loss_clip) == 2
+        assert self.loss_clip[1] > self.loss_clip[0]
 
         """self.loss: maps strings to losses (scalar tensor values)"""
         self.loss = OrderedDict()
@@ -617,6 +638,9 @@ class Net(object):
         """Support 'aggregate' losses -- weighted sums of other losses."""
         self.is_agg_loss = OrderedDict()
         self.agg_loss_terms = OrderedDict()
+
+        self.sample_log_prob_to_loss = OrderedDict()
+        self.baselines = OrderedDict()
 
         """self.layers: maps layer names (strings) to layers"""
         self.layers = OrderedDict()
@@ -673,6 +697,16 @@ class Net(object):
     def get_deploy_updates(self):
         return self.deploy_updates.items()
 
+    def add_sample_log_prob(self, value, weight=1, name='loss'):
+        if name not in self.is_agg_loss:
+            self.is_agg_loss[name] = False
+        assert not self.is_agg_loss[name]
+        if name not in self.sample_log_prob_to_loss:
+            self.sample_log_prob_to_loss[name] = {}
+        log_probs = self.sample_log_prob_to_loss[name]
+        if value not in log_probs:
+            log_probs[value] = None
+
     def add_loss(self, value, weight=1, name='loss'):
         print 'Adding loss:', (self.name, weight, name)
         if value.ndim > 1:
@@ -695,6 +729,13 @@ class Net(object):
                     self.loss[name] += value
                 else:
                     self.loss[name] = value
+        if name not in self.sample_log_prob_to_loss:
+            return
+        for k in self.sample_log_prob_to_loss[name].keys():
+            if self.sample_log_prob_to_loss[name][k] is None:
+                self.sample_log_prob_to_loss[name][k] = value
+            else:
+                self.sample_log_prob_to_loss[name][k] += value
 
     def add_agg_loss_term(self, term_name, weight=1, name='loss'):
         print 'Adding agg loss:', (self.name, weight, name, term_name)
@@ -713,8 +754,98 @@ class Net(object):
                        for k, w in self.agg_loss_terms[name])
         no_grad = theano.gradient.disconnected_grad
         total_loss = self.loss[name]
+        if name in self.sample_log_prob_to_loss:
+            log_probs = self.sample_log_prob_to_loss[name]
+            for log_prob, loss in log_probs.iteritems():
+                if loss is None:
+                    continue
+                loss = no_grad(loss)
+                assert log_prob.ndim == loss.ndim == 1
+                baseline_value = self._compute_baseline(log_prob, loss)
+                loss_factor = no_grad(loss - baseline_value)
+                loss_factor = self._clip_loss(loss_factor)
+                if self.loss_scale != 1:
+                    loss_factor *= self.loss_scale
+                total_loss += log_prob * loss_factor
+        # assert total_loss.ndim == 1
         assert total_loss.dtype.startswith('float')
         return total_loss
+
+    def _compute_baseline(self, log_prob, loss):
+        if self.baseline_type == 'batch':
+            baseline_value = loss.mean()
+        elif self.baseline_type == 'learned':
+            if log_prob in self.baselines:
+                baseline_value = self.baselines[log_prob]
+            else:
+                key = 'BaselineEst'
+                self.layer_count[key] += 1
+                name = '%s%d' % (key, self.layer_count[key])
+                baseline_value = self._add_param(name,
+                    np.array(0, dtype=theano.config.floatX))
+                self.baselines[log_prob] = baseline_value
+            assert baseline_value.dtype.startswith('float')
+            total_loss += T.sqr(baseline_value - loss).mean()
+        elif self.baseline_type.startswith('move_ave_'):
+            # equivalent to SGD minimization of MSE with certain LR
+            alpha = floatX(float(self.baseline_type[len('move_ave_'):]))
+            assert 0 <= alpha <= 1
+            if log_prob in self.baselines:
+                baseline_value, baseline_count = self.baselines[log_prob]
+            else:
+                def add_baseline_param(key, update):
+                    self.layer_count[key] += 1
+                    name = '%s%d' % (key, self.layer_count[key])
+                    param = self._add_param(name,
+                        np.array(0, dtype=theano.config.floatX),
+                        learnable=False)
+                    new_param = alpha * param + update
+                    self.add_updates((param, new_param))
+                    return param
+                baseline_value = add_baseline_param('BaselineAve', loss.mean())
+                baseline_count = add_baseline_param('BaselineCount', floatX(1))
+                self.baselines[log_prob] = baseline_value, baseline_count
+            baseline_value /= T.switch(baseline_count > 0, baseline_count, 1)
+        elif self.baseline_type.startswith('opt_move_ave'):
+            # optimal baseline? update baseline according to alg. 1 from:
+            # https://arxiv.org/pdf/1301.2315.pdf
+            if log_prob in self.baselines:
+                baseline_value, baseline_count = self.baselines[log_prob]
+            else:
+                def add_baseline_param(key, dtype):
+                    self.layer_count[key] += 1
+                    name = '%s%d' % (key, self.layer_count[key])
+                    param = self._add_param(name,
+                        np.array(0, dtype=dtype), learnable=False)
+                    return param
+                baseline_count = add_baseline_param('BaselineCount', dtype=np.int64)
+                baseline_value = add_baseline_param('BaselineAve', dtype=theano.config.floatX)
+            updated_baseline_count = baseline_count + 1
+            updated_baseline_value = baseline_value + \
+                (loss.mean() - baseline_value) / updated_baseline_count
+            if log_prob not in self.baselines:
+                self.add_updates((baseline_count, updated_baseline_count),
+                                 (baseline_value, updated_baseline_value))
+                self.baselines[log_prob] = baseline_value, baseline_count
+            baseline_value = updated_baseline_value
+        elif self.baseline_type.startswith('multisample_'):
+            num_samples = float(self.baseline_type[len('multisample_'):])
+            assert num_samples == int(num_samples)
+            num_samples = int(num_samples)
+            assert num_samples >= 1
+            assert loss.ndim == 1
+            mean_loss_per_inst = loss.reshape([num_samples, -1]).mean(axis=0)
+            baseline_value = mean_loss_per_inst.repeat(num_samples, axis=0)
+        else:
+            baseline_value = floatX(self.baseline_type)
+        return baseline_value
+
+    def _clip_loss(self, loss):
+        if self.loss_clip[0] > float('-inf'):
+            loss = T.switch(loss < self.loss_clip[0], self.loss_clip[0], loss)
+        if self.loss_clip[1] < float('+inf'):
+            loss = T.switch(loss > self.loss_clip[1], self.loss_clip[1], loss)
+        return loss
 
     def _add_layer(self, layer_constructor, *args, **kwargs):
         type_name = layer_constructor.__name__
@@ -1097,8 +1228,8 @@ deconvnet_96 = partial(deconvnet_128, start_size=3)
 deconvnet_96 = partial(deconvnet_64, start_size=6)
 
 def convnet(h, N=None, cond=None, arch=None, size=None, nonlin='LReLU',
-            num_fc=0, fc_dims=[], fc_drop=0,
-            cond_num_fc=0, cond_fc_dims=[], cond_fc_drop=0,
+            pool5=False, num_fc=0, fc_dims=[], fc_drop=0,
+            cond_num_fc=0, cond_fc_dims=[], cond_fc_drop=0, cond_early=True,
             minibatch_layer_halves=False, minibatch_layer_size=None,
             post_minibatch_layer_dims=[], bnkwargs=kwargs64,
             bn_separate=False, bn_use_ave=False):
@@ -1112,7 +1243,8 @@ def convnet(h, N=None, cond=None, arch=None, size=None, nonlin='LReLU',
         h = nonlin(h)
         return h
     def conv_acts(h, ksize=1, **kwargs):
-        return acts(N.Conv(h, ksize=ksize, **kwargs), ksize=ksize)
+        return acts(N.Conv(h, ksize=ksize, **kwargs),
+                    ksize=ksize, do_cond=cond_early)
     if cond is not None:
         cond_fc_dims = [1024] * cond_num_fc + cond_fc_dims
         hcond = cond
@@ -1250,9 +1382,15 @@ def convnet(h, N=None, cond=None, arch=None, size=None, nonlin='LReLU',
         h =     conv_acts(h, nout=256, ksize=1, stride=1)          # conv4.1
     else:
         raise ValueError('Unknown architecture: %s' % arch)
+    if pool5:
+        h =  N.Pool(h, ksize=3, stride=2, pad=0)
+    if (cond is not None) and (not cond_early):
+        if len(h.shape) > 2:
+            h = N.Reshape(h, shape=(-1, np.prod(h.shape[1:])))
+        h = N.Concat(h, cond)
     fc_dims = [4096] * num_fc + fc_dims
     for dim in fc_dims:
-        h = acts(N.FC(h, nout=dim))
+        h = acts(N.FC(h, nout=dim), do_cond=cond_early)
         if fc_drop != 0:
             h = N.Dropout(h, ratio=fc_drop)
     if minibatch_layer_size is not None:
@@ -1292,7 +1430,7 @@ def convnet(h, N=None, cond=None, arch=None, size=None, nonlin='LReLU',
         h = Output(T.concatenate([hin.value, diff_mean], axis=1),
                    shape=(hin.shape[0], in_dim + B))
     for dim in post_minibatch_layer_dims:
-        h = acts(N.FC(h, nout=dim))
+        h = acts(N.FC(h, nout=dim), do_cond=cond_early)
         if fc_drop != 0:
             h = N.Dropout(h, ratio=fc_drop)
     return h, N

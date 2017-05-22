@@ -15,6 +15,11 @@ def clip_norms(gs, c):
     norm = T.sqrt(sum([T.sum(g**2) for g in gs]))
     return [clip_norm(g, c, norm) for g in gs]
 
+def clip_param(p, c):
+    if c > 0:
+        p = p.clip(-c, c)
+    return p
+
 class Regularizer(object):
 
     def __init__(self, l1=0., l2=0., maxnorm=0., l2norm=False, frobnorm=False,
@@ -62,7 +67,7 @@ class Regularizer(object):
 
 class Update(object):
 
-    def __init__(self, regularizer=Regularizer(), clipnorm=0.):
+    def __init__(self, regularizer=Regularizer(), clipnorm=0., clipparams=0.):
         self.__dict__.update(locals())
 
     def __call__(self, params, grads):
@@ -82,6 +87,7 @@ class SGD(Update):
             g = self.regularizer.gradient_regularize(p, g)
             updated_p = p - self.lr * g
             updated_p = self.regularizer.weight_regularize(updated_p)
+            updated_p = clip_param(updated_p, self.clipparams)
             updates.append((p, updated_p))
         return updates
 
@@ -106,6 +112,7 @@ class Momentum(Update):
 
             updated_p = p + v
             updated_p = self.regularizer.weight_regularize(updated_p)
+            updated_p = clip_param(updated_p, self.clipparams)
             updates.append((p, updated_p))
         return updates
 
@@ -127,6 +134,7 @@ class NAG(Update):
 
             updated_p = p + self.momentum * v - self.lr * g
             updated_p = self.regularizer.weight_regularize(updated_p)
+            updated_p = clip_param(updated_p, self.clipparams)
             updates.append((m,v))
             updates.append((p, updated_p))
         return updates
@@ -150,6 +158,7 @@ class RMSprop(Update):
 
             updated_p = p - self.lr * (g / T.sqrt(acc_new + self.epsilon))
             updated_p = self.regularizer.weight_regularize(updated_p)
+            updated_p = clip_param(updated_p, self.clipparams)
             updates.append((p, updated_p))
         return updates
 

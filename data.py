@@ -312,28 +312,6 @@ breakout_data_providers = functools.partial(pong_data_providers,
 beamrider_data_providers = functools.partial(pong_data_providers,
     filename='./data/atari/BeamRider-100000-dqn-dec.h5')
 
-def rescale(X, orig, new, in_place=False):
-    assert len(orig) == len(new) == 2
-    (a, b), (x, y) = ([float(b) for b in r] for r in (orig, new))
-    assert b > a and y > x
-    if (a, b) == (x, y):
-        return X
-    if not in_place:
-        X = X.copy()
-                  # X \in [a, b]
-    # X -= a      # X \in [0, b-a]
-    if a != 0:
-        X -= a
-    # X /= b - a  # X \in [0, 1]
-    # X *= y - x  # X \in [0, y-x]
-    scale = (y - x) / (b - a)
-    if scale != 1:
-        X *= scale
-    # X += x      # X \in [x, y]
-    if x != 0:
-        X += x
-    return X
-
 class Dataset(object):
     def __init__(self, args):
         crop_resize = (args.crop_size if (args.crop_resize is None)

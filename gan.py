@@ -1,9 +1,15 @@
 #!/usr/bin/env python
 from __future__ import division
 
+import copy
+import numpy as np
+import sys
+sys.path.append('..')
+
 import theano
 import theano.tensor as T
 
+from lib.rng import t_rng
 from net import L, Net, Output, get_convnet, get_deconvnet
 
 class LearningModule(object):
@@ -11,15 +17,29 @@ class LearningModule(object):
     def set_mode(self, mode):
         if mode not in self.modes:
             raise ValueError('Unknown mode %s; should be in: %s'
-                             % (mode, self.modes))
+                             % (mode, modes))
         self.mode = mode
 
+def get_latent_input(args, dist, y, z=None, include_dists=None):
+    h, weights = dist.embed_data(include_dists=include_dists)
+    if z is not None:
+        assert len(h) == len(z) + args.label_cond
+        for hi, zi in zip(h, z):
+            hi.value = zi.value
+            if hi.shape != zi.shape:
+                raise ValueError('shape mismatch: %s vs. %s'
+                                 % (hi.shape, zi.shape))
+    if args.label_cond:
+        h.append(y)
+        weights.append(1)
+    return h, weights
+
 class Generator(LearningModule):
-    def __init__(self, args, dist, nc, z=None, source=None, mode='train',
+    def __init__(self, args, dist, nc, y, z=None, source=None, mode='train',
                  bnkwargs={}, gen_transform=None):
-        N = self.net = Net(source=source, name='Generator')
+        N = self.net = Net(source=source, name='Generator', **args.net_kwargs)
         self.set_mode(mode)
-        h_and_weights = dist.embed_data()
+        h_and_weights = get_latent_input(args, dist, y, z=z)
         bn_use_ave = (mode == 'test')
         self.data, _ = get_deconvnet(image_size=args.crop_resize,
                                      name=args.gen_net)(h_and_weights, N=N,
@@ -36,8 +56,11 @@ class Featurizer(LearningModule):
                  discrim_weight=0, encode_weight=0,
                  joint_discrim_weight=0, updater=None,
                  net_name=None, net_size=None,
-                 extra_cond_real=None, extra_cond_gen=None,
-                 is_discrim=False, name='Featurizer'):
+                 label_cond=False, extra_cond_real=None, extra_cond_gen=None,
+                 source_discrim=None, source_gen=None, gen_kwargs={},
+                 encode_dist=None, encode_regen=False,
+                 image_noise_std=0,
+                 input_net=None, is_discrim=False, name='Featurizer'):
         self.X = X
         self.gX = gX
         self.Y = Y
@@ -46,18 +69,28 @@ class Featurizer(LearningModule):
         self.nc = nc
         self.bnkwargs = bnkwargs
         self.set_mode(mode)
+        self.input_net = input_net
         self.net = None
         self.updater = updater
         self.net_name = net_name
         self.net_size = net_size
+        self.label_cond = label_cond
         self._feats = {}
         self.cond_real = extra_cond_real
         self.cond_gen = extra_cond_gen
         assert (self.cond_real is None) == (self.cond_gen is None)
         self.cond = self.cond_real is not None
+        self.image_noise_std = image_noise_std
+        if label_cond:
+            if not self.cond:
+                self.cond_real = []
+                self.cond_gen = []
+            self.cond_real += [Y]
+            self.cond_gen += [Y]
         assert ((self.cond_real is None) and (self.cond_gen is None)) or \
                len(self.cond_real) == len(self.cond_gen)
-        self.do_encode = bool(encode_weight or joint_discrim_weight)
+        self.do_encode = bool(encode_weight or joint_discrim_weight or \
+                              encode_regen)
         self.is_discrim = is_discrim
         if args.cat_inputs and not any(a is None for a in (self.X, self.gX)):
             data_cat = L.Concat(self.X, self.gX, axis=0)
@@ -80,19 +113,24 @@ class Featurizer(LearningModule):
             self.labeler = labeler = MultilabelClassifier(self.net, ny)
             loss = labeler.loss(h_real, Y)
             assert labeler.W is not None
-            # pop W from the params to be trained separately at 'deploy' time
-            for w in reversed(labeler.W):
-                assert self.net._params.popitem()[1][0] == w
-            if args.classifier_deploy:
-                add_updates = self.net.add_deploy_updates
+            if args.cheat_classifier:
+                assert not args.classifier_deploy
+                self.net.add_loss(loss, weight=args.cheat_classifier, name='loss_real')
             else:
-                add_updates = self.net.add_updates
-            add_updates(*updater(labeler.W, loss.mean()))
+                # don't cheat -- pop W from the params and train it separately
+                for w in reversed(labeler.W):
+                    assert self.net._params.popitem()[1][0] == w
+                if args.classifier_deploy:
+                    add_updates = self.net.add_deploy_updates
+                else:
+                    add_updates = self.net.add_updates
+                add_updates(*updater(labeler.W, loss.mean()))
         if discrim_weight:
             self.add_discrim_loss(h_real, h_gen, weight=discrim_weight)
         if self.do_encode:
             self.encoder = encoder = Encoder(self.net, args, dist, self.Y,
-                X=self.X, updater=updater,
+                X=self.X, discrim=source_discrim, source_gen=source_gen,
+                updater=updater, gen_kwargs=gen_kwargs, encode_dist=encode_dist,
                 featurizer=self, bias=args.encode_out_bias)
             encoder.gen_cost = g = encoder.real_loss(self.h_real)
             encoder.real_cost = r = encoder.gen_loss(self.h_gen)
@@ -114,11 +152,22 @@ class Featurizer(LearningModule):
         if key in self._feats:
             return self._feats[key]
         args = self.args
-        if self.net is None:
-            N = self.net = Net(name=self.name)
+        if self.input_net is not None:
+            # if specified, use self.input_net only once, then unset it
+            # and use as the "source" net for future feats invocations
+            assert self.net is None
+            N = self.net = self.input_net
+            self.input_net = None
+        elif self.net is None:
+            N = self.net = Net(name=self.name, **args.net_kwargs)
         else:
-            N = Net(source=self.net, name=self.name)
+            N = Net(source=self.net, name=self.name, **args.net_kwargs)
         assert isinstance(image, Output)
+        if self.image_noise_std != 0:
+            assert self.image_noise_std > 0
+            noise = t_rng.normal(size=image.value.shape, avg=0,
+                std=T.cast(self.image_noise_std, theano.config.floatX))
+            image = Output(image.value + noise, shape=image.shape)
         fc_drop = 0 if (self.mode == 'test') else (
             args.encode_net_fc_drop if
             (self.do_encode and (args.encode_net_fc_drop is not None))
@@ -139,10 +188,13 @@ class Featurizer(LearningModule):
             (self.do_encode and (args.encode_nonlin is not None))
             else args.conv_nonlin
         )
+        pool5 = args.encode_pool5 if (self.do_encode) else False
         bn_use_ave = (self.mode == 'test')
         net = get_convnet(image_size=args.crop_resize, name=self.net_name)
         kwargs = {}
         kwargs.update(self.bnkwargs)
+        if args.no_cond_early:
+            kwargs.update(cond_early=False)
         if args.cond_fc is not None:
             kwargs.update(cond_num_fc=args.cond_fc)
         if args.cond_fc_dims is not None:
@@ -161,7 +213,7 @@ class Featurizer(LearningModule):
             size = self.net_size
         f, _ = net(image, cond=cond, N=N, size=size,
                    num_fc=num_fc, fc_dims=fc_dims, fc_drop=fc_drop,
-                   nonlin=nonlin, bn_use_ave=bn_use_ave,
+                   nonlin=nonlin, bn_use_ave=bn_use_ave, pool5=pool5,
                    bn_separate=args.bn_separate, **kwargs)
         self._feats[key] = f
         return f
@@ -170,7 +222,8 @@ class Featurizer(LearningModule):
         discrim = {}
         assert not hasattr(self, name)
         setattr(self, name, discrim)
-        discrim['discrim'] = d = BinaryClassifier(self.net)
+        discrim['discrim'] = d = BinaryClassifier(self.net,
+            label_range=self.args.label_smooth)
         def add_discrim_cost(h_y, prefix=''):
             key = '%sloss' % prefix
             cost = {}
@@ -180,10 +233,18 @@ class Featurizer(LearningModule):
                 loss_name = '%s_%s' % (key, name)
                 self.net.add_loss(loss, name=loss_name)
                 self.net.add_agg_loss_term(loss_name, weight=weight/2, name=key)
-        h_y = ('real', h_real, 1), ('gen', h_gen, 0)
-        add_discrim_cost(h_y)
-        h_y_not = ((n, h, 1 - y) for n, h, y in h_y)
-        add_discrim_cost(h_y_not, prefix='opp_')
+        if self.args.discrim_both_cost:
+            h_real, h_gen = [d.preds(h).value.flatten()
+                             for h in (h_real, h_gen)]
+            self.net.add_loss(h_real, name='loss_real')
+            self.net.add_loss(-h_gen, name='loss_gen')
+            self.net.add_agg_loss_term('loss_real', weight=weight/2, name='loss')
+            self.net.add_agg_loss_term('loss_gen', weight=weight/2, name='loss')
+        else:
+            h_y = ('real', h_real, 1), ('gen', h_gen, 0)
+            add_discrim_cost(h_y)
+            h_y_not = ((n, h, 1 - y) for n, h, y in h_y)
+            add_discrim_cost(h_y_not, prefix='opp_')
         return discrim
 
 class LinearPredictor(LearningModule):
@@ -232,8 +293,9 @@ class LinearPredictor(LearningModule):
         return preds
 
 class Encoder(LinearPredictor):
-    def __init__(self, N, args, dist, y, X=None, updater=None,
-                 featurizer=None, bias=False):
+    def __init__(self, N, args, dist, y, X=None, discrim=None, updater=None,
+                 label_cond=None, source_gen=None, encode_dist=None,
+                 gen_kwargs={}, featurizer=None, bias=False):
         self.N = N
         self.args = args
         self.dist = dist
@@ -243,9 +305,22 @@ class Encoder(LinearPredictor):
         super(Encoder, self).__init__(N, nout=dist.recon_dim, stddev=stddev, bias=bias)
         self.encode_gen = bool(args.encode_weight)
         self.encode_real = args.encode_kldiv_real
+        self.discrim, self.source_gen, self.gen_kwargs = \
+            discrim, source_gen, gen_kwargs
+        self.regen_discrim_net = None
+        self.regen_discrim = None
         self.X = X
         self.updater = updater
         self.featurizer = featurizer
+        self.encode_dist = encode_dist
+
+    def preds(self, feats):
+        if self.encode_dist is not None:
+            if len(feats.shape) > 2:
+                feats = self.N.Reshape(feats, shape=[-1, np.prod(feats.shape[1:])])
+            noise = self.encode_dist.embed_data()[0]
+            feats = self.N.Concat(*([feats] + noise), axis=1)
+        return super(Encoder, self).preds(feats)
 
     def dist_recon_error(self, feats):
         assert isinstance(feats, Output)
@@ -295,7 +370,13 @@ class MultilabelClassifier(LinearPredictor):
         return T.nnet.categorical_crossentropy(probs, label.value)
 
 class BinaryClassifier(LinearPredictor):
-    def __init__(self, N):
+    def __init__(self, N, label_range=[0, 1]):
+        assert len(label_range) == 2
+        if tuple(label_range) == (0, 1):
+            self.label_range = None
+        else:
+            assert 0 <= label_range[0] < label_range[1] <= 1
+            self.label_range = label_range
         super(BinaryClassifier, self).__init__(N, nout=1)
 
     def probs(self, feats):
@@ -307,4 +388,10 @@ class BinaryClassifier(LinearPredictor):
 
     def loss(self, feats, label):
         probs = self.probs(feats)
+        if self.label_range is not None:
+            label_diff = self.label_range[1] - self.label_range[0]
+            if label_diff != 1:
+                label *= label_diff
+            if self.label_range[0] != 0:
+                label += self.label_range[0]
         return T.nnet.binary_crossentropy(probs, label)

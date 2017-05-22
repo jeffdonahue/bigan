@@ -44,3 +44,15 @@ def mnist_with_valid_set():
     trY = trY[:50000]
 
     return trX, vaX, teX, trY, vaY, teY
+
+def labeled_image_set(filename, image_dir):
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    filenames, labels = [], []
+    for line in lines:
+        f, l = line.split()
+        filenames.append(os.path.join(image_dir, f))
+        labels.append(int(l))
+    filenames, labels = shuffle(filenames, labels)
+    labels = np.array(labels)
+    return filenames, labels

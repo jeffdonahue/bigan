@@ -35,15 +35,39 @@ def makedirs(root, file_list):
         if not os.path.exists(d):
             os.makedirs(d)
 
+def resize_subimage(minor_size, image, out_full_path, is_png, use_plt, verbose=False, strict=False):
+    size = image.size
+    orig_minor_size = min(size)
+    scale_factor = minor_size / orig_minor_size
+    new_size = tuple(int(round(scale_factor * s)) for s in size)
+    image.draft(None, new_size)
+    try:
+        image = image.resize(new_size, Image.ANTIALIAS)
+    except IOError:
+        print 'IOError on resize:', full_path
+        if strict:
+            raise
+        return
+    if is_png:
+        image = image.convert('RGB')
+    if verbose:
+        print 'Resized image (%s) from %s to %s; saving to file: %s' % \
+            (full_path, size, image.size, out_full_path)
+    if use_plt:
+        plt.imsave(out_full_path, np.array(image, dtype=np.uint8))
+    else:
+        image.save(out_full_path, quality=95)
+
 def resize_image(minor_size, in_root, out_root, path,
                  overwrite=False, format=None, check=False, verbose=False,
-                 strict=False, use_plt=False):
+                 strict=False, num_vertical=None):
     out_full_path = os.path.join(out_root, path)
     if format is None:
         is_png = (os.path.splitext(path)[1] == 'png')
     else:
         out_full_path = '%s.%s' % (os.path.splitext(out_full_path)[0], format)
         is_png = (format.lower() == 'png')
+    use_plt = False
     if (not overwrite) and os.path.exists(out_full_path):
         if check:
             try:
@@ -68,27 +92,24 @@ def resize_image(minor_size, in_root, out_root, path,
         if strict:
             raise
         return
-    size = image.size
-    orig_minor_size = min(size)
-    scale_factor = minor_size / orig_minor_size
-    new_size = tuple(int(round(scale_factor * s)) for s in size)
-    image.draft(None, new_size)
-    try:
-        image = image.resize(new_size, Image.ANTIALIAS)
-    except IOError:
-        print 'IOError on resize:', full_path
-        if strict:
-            raise
-        return
-    if is_png:
-        image = image.convert('RGB')
-    if verbose:
-        print 'Resized image (%s) from %s to %s; saving to file: %s' % \
-            (full_path, size, image.size, out_full_path)
-    if use_plt:
-        plt.imsave(out_full_path, np.array(image, dtype=np.uint8))
+    if num_vertical is None:
+        resize_subimage(minor_size, image, out_full_path, is_png, use_plt,
+                        verbose=verbose, strict=strict)
     else:
-        image.save(out_full_path, quality=95)
+        assert num_vertical > 0
+        height = image.size[1]
+        assert height % num_vertical == 0
+        subimage_height = height // num_vertical
+        full_path_head, ext = os.path.splitext(out_full_path)
+        for image_index, image_start in \
+                enumerate(xrange(0, height, subimage_height)):
+            image_end = image_start + subimage_height
+            # subimage = image[:, image_start : image_end]
+            subimage = image.crop([0, image_start, image.size[0], image_end])
+            subimage_out_full_path = '%s.%d%s' % \
+                (full_path_head, image_index, ext)
+            resize_subimage(minor_size, subimage, subimage_out_full_path,
+                            is_png, use_plt, verbose=verbose, strict=strict)
 
 class FakePool(object):
     def imap_unordered(self, function, iterable, chunksize=None):
@@ -145,6 +166,9 @@ if __name__ == '__main__':
         help='Recursively explore subdirectories of the input directory')
     parser.add_argument('-o', '--overwrite', action='store_true',
         help='Overwrite any existing images (otherwise, skip)')
+    parser.add_argument('--num_vertical', type=int,
+        help='Assume each input image consists of this number of vertically '
+             'concatenated images; split them')
     parser.add_argument('size', type=int,
         help='The minor edge size of the output')
     parser.add_argument('input_directory',
@@ -162,4 +186,5 @@ if __name__ == '__main__':
         raise ValueError('--jobs (-j) must be non-negative')
     resize_directory(args.size, args.input_directory, args.output_directory,
                      pool=pool, overwrite=args.overwrite, format=args.format,
-                     check=args.check, verbose=(not args.quiet))
+                     check=args.check, num_vertical=args.num_vertical,
+                     verbose=(not args.quiet))
