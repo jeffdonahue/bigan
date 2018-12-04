@@ -216,7 +216,7 @@ parser.add_argument('--weights',
     help='Weights filename prefix (e.g., * in *_discrim_params.jl)')
 
 args = parser.parse_args()
-print 'Args: %s' % args
+print('Args: %s' % args)
 
 args.net_fc_dims = [int(d) for d in args.net_fc_dims.split(',') if d]
 if args.encode_net_fc_dims is not None:
@@ -463,7 +463,7 @@ if args.encode:
             train_gen.net.add_loss(net.get_loss(),
                                    weight=args.encode_gen_weight)
         except KeyError:
-            print 'Warning: encoder had no separate loss to contribute to gen'
+            print('Warning: encoder had no separate loss to contribute to gen')
         encode_gen_params = net.learnables()
         for k in net.learnable_keys():
             # mark all params unlearnable -- will be learned by gen
@@ -495,9 +495,13 @@ deploy_label = (args.classifier and args.classifier_deploy)
 X_discrim_input = [Xis]
 X_enc_input = [Xi]
 
-for k, v in disp_costs.iteritems():
+del_keys = []
+for k, v in disp_costs.items():
     if isinstance(v, (int, float, type(None))):
-        del disp_costs[k]
+        del_keys.append(k)
+
+for k in del_keys:
+    del disp_costs[k]
 
 set_mode('test')
 if f_discrim is not None:
@@ -522,7 +526,7 @@ if deploy_label:
 deploy_inputs += Z
 deploy_updates = []
 for n in nets: deploy_updates.extend(n.get_deploy_updates())
-_deploy_update = lazy_function(deploy_inputs, disp_costs.values(),
+_deploy_update = lazy_function(deploy_inputs, list(disp_costs.values()),
                                updates=deploy_updates)
 update_both = (not args.no_update_both) and (args.k == 1)
 niter = args.epochs # # of iter at starting learning rate
@@ -587,7 +591,7 @@ def batch_map(f, X, nbatch=args.batch_size, wraparound=False):
         assert len(x) == n
     out = None
     f_returns_ndarray = None
-    for start in xrange(0, n, nbatch):
+    for start in range(0, n, nbatch):
         end = min(start + nbatch, n)
         inputs = [x[start:end] for x in X]
         if wraparound:
@@ -622,27 +626,27 @@ megabatch_size = min(max_images_per_megabatch,
     int(max_memory_per_megabatch / float(image_bytes)))
 
 num_val = args.num_val_megabatch * megabatch_size
-print 'Getting %d val data' % num_val
+print('Getting %d val data' % num_val)
 vaXImages, vaY = dataset.val_provider.get_data(num_val)
 if len(vaXImages) > 1:
     vaXBigImages, vaXImages = vaXImages
 else:
     vaXBigImages = vaXImages = vaXImages[0]
 num_train = args.num_train_megabatch * megabatch_size
-print 'Getting %d train data' % num_train
+print('Getting %d train data' % num_train)
 trXImages, trY = dataset.train_provider.get_data(num_train)
 if len(trXImages) > 1:
     trXBigImages, trXImages = trXImages
 else:
     trXBigImages = trXImages = trXImages[0]
 
-print 'Getting samples'
+print('Getting samples')
 grid_shape = ny, dataset.num_vis_samples
 tr_idxs = np.arange(len(trY))
-sample_inds = [py_rng.sample(tr_idxs[trY==y], dataset.num_vis_samples)
-               for y in xrange(ny)]
+sample_inds = [py_rng.sample(list(tr_idxs[trY==y]), dataset.num_vis_samples)
+               for y in range(ny)]
 trXVisRaw = np.asarray([[trXImages[i] for i in sample_inds[y]]
-                        for y in xrange(ny)]).reshape(
+                        for y in range(ny)]).reshape(
                             -1, nc, args.crop_resize, args.crop_resize)
 trXVis = inverse_transform(transform(trXVisRaw))
 dataset.grid_vis(trXVis, grid_shape, '%s/real.png' % (samples_dir,))
@@ -650,10 +654,10 @@ if args.crop_size == args.crop_resize:
     trXBigVisRaw = trXVisRaw
 else:
     trXBigVisRaw = np.asarray([[trXBigImages[i] for i in sample_inds[y]]
-                               for y in xrange(ny)]).reshape(-1, nc, crop, crop)
+                               for y in range(ny)]).reshape(-1, nc, crop, crop)
     trXBigVis = inverse_transform(transform(trXBigVisRaw, crop=crop), crop=crop)
     dataset.grid_vis(trXBigVis, grid_shape, '%s/real_big.png' % (samples_dir,))
-print 'Done. Training...'
+print('Done. Training...')
 
 def flat(X):
     return X.reshape(len(X), -1)
@@ -681,7 +685,7 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
     kwargs = dict(metric='euclidean')
     cost_string = '  '.join('%s: %.4f' % o
                             for o in zip(disp_costs.keys(), costs))
-    print '%*d) %s' % (len('%d'%total_niter), epoch, cost_string)
+    print('%*d) %s' % (len('%d'%total_niter), epoch, cost_string))
     outs = OrderedDict()
     _feats = {}
     def _get_feats(f, x):
@@ -748,8 +752,8 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
         def is_prop(key, prop_metrics=['NNC', 'CLS']):
             return any(key.startswith(m) for m in prop_metrics)
         return '%s: %.2f' + ('%%' if is_prop(key) else '')
-    print '  '.join(format_str(k) % (k, v)
-                    for k, v in outs.iteritems())
+    print('  '.join(format_str(k) % (k, v)
+                    for k, v in outs.items()))
     samples = batch_map(_gen, sample_inputs, wraparound=True)
     sample_shape = num_sample_rows, num_sample_cols
     def imname(tag=None):
@@ -781,7 +785,7 @@ param_groups = dict(
 )
 
 def save_params(epoch, groups=param_groups):
-    for key, param_list in groups.iteritems():
+    for key, param_list in groups.items():
         if len(param_list) == 0: continue
         path = '%s/%d_%s_params.jl' % (model_dir, epoch, key)
         joblib.dump([p.get_value() for p in param_list], path)
@@ -791,7 +795,7 @@ def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
         assert weight_prefix is None
         weight_prefix = '%s/%d' % (model_dir, resume_epoch)
     assert weight_prefix is not None
-    for key, param_list in groups.iteritems():
+    for key, param_list in groups.items():
         if len(param_list) == 0: continue
         path = '%s_%s_params.jl' % (weight_prefix, key)
         if not os.path.exists(path):
@@ -801,7 +805,7 @@ def load_params(weight_prefix=None, resume_epoch=None, groups=param_groups):
             raise ValueError(('different param list lengths: '
                               'len(saved)=%d != %d=len(params)')
                                % (len(saved_params), len(param_list)))
-        print 'Loading %d params from: %s' % (len(param_list), path)
+        print('Loading %d params from: %s' % (len(param_list), path))
         for saved, shared in zip(saved_params, param_list):
             if shared.get_value().shape != saved.shape:
                 raise ValueError(('shape mismatch: '
@@ -856,7 +860,7 @@ def deploy():
     start_time = time()
     sys.stdout.write('Running %d deploy update iterations...' % args.deploy_iters)
     costs = np.mean([_deploy_update(*get_batch(deploy=True))
-                     for _ in xrange(args.deploy_iters)], axis=0)
+                     for _ in range(args.deploy_iters)], axis=0)
     deploy_time = time() - start_time
     sys.stdout.write('done. (%f seconds)\n' % deploy_time)
     return costs
@@ -870,7 +874,7 @@ def train():
                             ([] if args.no_disp_one else [1]))
     if args.disp_interval is None:
         args.disp_interval = total_niter + 1
-    for epoch in xrange(start_epoch, total_niter + 1):
+    for epoch in range(start_epoch, total_niter + 1):
         do_eval = (epoch % args.disp_interval == 0) or (epoch in disp_epochs)
         do_save = (epoch in save_epochs) or (
             (args.save_interval is not None) and
@@ -886,13 +890,13 @@ def train():
             break
         set_lr(epoch)
         start_time = time()
-        for index in xrange(iters_per_epoch):
+        for index in range(iters_per_epoch):
             inputs = get_batch()
             train_batch(inputs, n_updates)
             n_updates += 1 + update_both
         epoch_time = time() - start_time
-        print 'Epoch %d: %f seconds (LR = %g)' \
-              % (epoch, epoch_time, lrt.get_value())
+        print('Epoch %d: %f seconds (LR = %g)' \
+              % (epoch, epoch_time, lrt.get_value()))
 
 if __name__ == '__main__':
     if (args.weights is not None) or (args.resume is not None):

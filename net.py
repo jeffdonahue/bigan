@@ -46,9 +46,11 @@ class Output(object):
                         shape = None
                 except AttributeError:
                     pass
+        #print("shape", shape)
         if shape is not None:
             for s in list(shape) + ([] if (index_max is None) else [index_max]):
-                assert isinstance(s, int)
+                #print(type(s))
+                assert isinstance(s, (int, np.integer))
                 assert s >= 0
             shape = tuple(shape)
             assert len(shape) == value.ndim
@@ -78,7 +80,7 @@ def reparameterized_weights(w, g, epsilon=1e-8, nin_axis=None, exp=exp_reparam):
         assert 0 <= axis < w.ndim
     norm = T.sqrt(T.sqr(w).sum(axis=nin_axis, keepdims=True) + epsilon)
     if exp: g = T.exp(g)
-    g_axes = list(reversed(xrange(g.ndim)))
+    g_axes = list(reversed(list(range(g.ndim))))
     dimshuffle_pattern = ['x' if (axis in nin_axis) else g_axes.pop()
                           for axis in range(w.ndim)]
     assert not g_axes
@@ -140,8 +142,8 @@ class Layer(object):
                 outs[index] = Output(out.value, out_shape,
                                      index_max=out.index_max)
         self.output = tuple(outs)
-        print '(%s) Creating outputs with shapes: %s' % \
-            (self.name, ', '.join(str(o.shape) for o in self.output))
+        print ('(%s) Creating outputs with shapes: %s' % \
+            (self.name, ', '.join(str(o.shape) for o in self.output)))
         if len(self.output) == 1:
             self.output = self.output[0]
 
@@ -157,7 +159,7 @@ class Layer(object):
                 nin_axis=None, exp_reparam=exp_reparam):
         if stddev is None:
             stddev = self.weight_init
-        print 'weights: initializing weights with stddev = %f' % stddev
+        print( 'weights: initializing weights with stddev = %f' % stddev)
         if stddev == 0:
             value = np.zeros(shape)
         else:
@@ -218,7 +220,7 @@ class Concat(Layer):
         index_max = set(hi.index_max for hi in h)
         assert len(index_max) == 1
         index_max = index_max.pop()
-        for i in xrange(num_axes):
+        for i in range(num_axes):
             if i == axis:
                 continue
             dims = set(hi.shape[i] for hi in h)
@@ -247,7 +249,7 @@ class Slice(Layer):
             if isinstance(in_dim, (int, float)):
                 assert num * size == in_dim, \
                     'Slice: num(=%d) must evenly divide in_dim=(%d)' % (num, in_dim)
-            slice_point = [i * size for i in xrange(1, num)]
+            slice_point = [i * size for i in range(1, num)]
         if len(slice_point) == 0:
             return Output(h.value, index_max=h.index_max)
         slices = [slice(start, end) for start, end in
@@ -297,7 +299,7 @@ class Conv(Layer):
         pad = get_pad(pad, ksize)
         subsample = stride, stride
         outs = []
-        for g in xrange(group):
+        for g in range(group):
             if group > 1:
                 size = nout // group
                 w = W[g*size : (g+1)*size]
@@ -413,7 +415,7 @@ class FC(Layer):
         if out_shape_specified:
             out_shape = nout
         else:
-            assert isinstance(nout, int)
+            assert isinstance(nout, (int, np.integer))
             out_shape = nout,
         nout = np.prod(out_shape)
         nin_axis = [0]
@@ -493,7 +495,7 @@ class BatchNorm(Layer):
             self.net.deploy_updates[param] = new_param
         h, h_shape = h.value, h.shape
         assert h.ndim >= 1
-        axes = [0] + range(2, h.ndim)
+        axes = [0] + list(range(2, h.ndim))
         count = self.bn_count()
         if not use_ave:
             move_ave_update(count, 1)
@@ -581,7 +583,7 @@ class BiReLU(Layer):
         return N.Concat(N.ReLU(h), N.ReLU(neg_h), axis=axis)
 
 class L(object):
-    layers = {k: v for k, v in globals().iteritems()
+    layers = {k: v for k, v in globals().items()
               if isinstance(v, type) and issubclass(v, Layer)}
     def __getattr__(self, attr):
         def layer_method(*args, **kwargs):
@@ -596,13 +598,13 @@ def checked_update(target_map, source={}, **new_kwargs):
 
     Returns None, updating target_map in-place.
     """
-    for k, v in itertools.chain(source.iteritems(), new_kwargs.iteritems()):
+    for k, v in itertools.chain(source.items(), new_kwargs.items()):
         if k in target_map:
             raise ValueError('checked_update: key exists: %s' % k)
         target_map[k] = v
 
 class Net(object):
-    layer_types = {k: v for k, v in globals().iteritems()
+    layer_types = {k: v for k, v in globals().items()
                    if isinstance(v, type) and issubclass(v, Layer)}
 
     def __init__(self, source=None, name=None):
@@ -642,13 +644,13 @@ class Net(object):
         self.source_params = source._params if self.reuse else None
 
     def params(self):
-        return [p for p, _ in self._params.itervalues()]
+        return [p for p, _ in self._params.values()]
 
     def learnables(self):
-        return [p for p, l in self._params.itervalues() if l]
+        return [p for p, l in self._params.values() if l]
 
     def learnable_keys(self):
-        return [k for k, (_, l) in self._params.iteritems() if l]
+        return [k for k, (_, l) in self._params.items() if l]
 
     def add_deploy_updates(self, *args, **kwargs):
         for k in (dict(args), kwargs):
@@ -659,7 +661,7 @@ class Net(object):
             checked_update(self.updates, k)
 
     def get_updates(self, updater=None, loss='loss', extra_params=[]):
-        updates = self.updates.items()
+        updates = list(self.updates.items())
         if updater is not None:
             try:
                 loss_value = self.get_loss(loss).mean()
@@ -674,7 +676,7 @@ class Net(object):
         return self.deploy_updates.items()
 
     def add_loss(self, value, weight=1, name='loss'):
-        print 'Adding loss:', (self.name, weight, name)
+        print ('Adding loss:', (self.name, weight, name))
         if value.ndim > 1:
             raise ValueError('value must be 0 or 1D (not %dD)' % value.ndim)
         if name not in self.is_agg_loss:
@@ -697,7 +699,7 @@ class Net(object):
                     self.loss[name] = value
 
     def add_agg_loss_term(self, term_name, weight=1, name='loss'):
-        print 'Adding agg loss:', (self.name, weight, name, term_name)
+        print ('Adding agg loss:', (self.name, weight, name, term_name))
         if name not in self.is_agg_loss:
             self.is_agg_loss[name] = True
             self.agg_loss_terms[name] = []
@@ -736,11 +738,11 @@ class Net(object):
             if value.shape != existing_shape:
                 raise ValueError('Param "%s": incompatible shapes %s vs. %s' %
                                  (name, existing_shape, value.shape))
-            print '(%s) Reusing param "%s" with shape: %s' % \
-                (layer_name, name, value.shape)
+            print( '(%s) Reusing param "%s" with shape: %s' % \
+                (layer_name, name, value.shape))
         else:
-            print '(%s) Adding param "%s" with shape: %s' % \
-                  (layer_name, name, value.shape)
+            print ('(%s) Adding param "%s" with shape: %s' % \
+                  (layer_name, name, value.shape))
             param = sharedX(value, dtype=dtype, name=name)
         assert name not in self._params, 'param "%s already exists' % name
         self._params[name] = (param, bool(learnable))
@@ -945,7 +947,7 @@ def deconvnet_64(h, N=None, nout=3, size=None, bn_flat=True,
     h = deconv_acts(h, nout=(size*1, ss*8, ss*8), stride=2)
     curnout = (nout if num_refine == 0 else size//2, ss*16, ss*16)
     h = deconv_op(h, nout=curnout, ksize=ksize, stride=2)
-    for i in xrange(num_refine):
+    for i in range(num_refine):
         h = acts(h, ksize=k)
         is_last = (i == num_refine - 1)
         curnout = nout if is_last else (size//2)
@@ -1020,7 +1022,7 @@ def deconvnet_128(h, N=None, nout=3, size=None, bn_flat=True,
     if False:  # ignore this stuff for now...
         curnout = nout if (num_refine == 0) else (size//2, ss*32, ss*32)
         h = N.Deconv(h, nout=curnout, ksize=k, stride=2)
-        for i in xrange(num_refine):
+        for i in range(num_refine):
             h = acts(h, ksize=k)
             is_last = (i == num_refine - 1)
             curnout = nout if is_last else (size//2)
@@ -1084,7 +1086,7 @@ def deepsimgen_deconvnet_128(
     h = deconv_acts(h, nout=(  size, 16*ss, 16*ss), stride=2, ksize=4)  # uconv4 -> ( 64,  64,  64)
     curnout = nout if (num_refine == 0) else (size//2)
     h = N.Deconv(h, nout=(curnout, 32*ss, 32*ss), stride=2, ksize=4)    # uconv5 -> (  3, 128, 128)
-    for i in xrange(num_refine):
+    for i in range(num_refine):
         h = acts(h, ksize=k)
         is_last = (i == num_refine - 1)
         curnout = nout if is_last else (size//2)
@@ -1275,7 +1277,7 @@ def convnet(h, N=None, cond=None, arch=None, size=None, nonlin='LReLU',
         for h in h_parts:
             diff_sum = None
             hv = h.value
-            for offset in xrange(1, D+1):
+            for offset in range(1, D+1):
                 hoff = T.concatenate([hv[offset:], hv[:offset]], axis=0)
                 diff = abs(hv - hoff).sum(axis=2) # -> N x B (summed over C)
                 diff = T.exp(-diff)
@@ -1323,13 +1325,13 @@ def test_batch_norm(thresh=1e-8):
     f = theano.function([z.value], znormed.value,
                         updates=N.deploy_updates.items())
 
-    outputs = [f(data[i:(i+b)]) for i in xrange(0, n, b)]
+    outputs = [f(data[i:(i+b)]) for i in range(0, n, b)]
     output = np.concatenate(outputs, axis=0)
     thresh = 1e-6
-    for i in xrange(dim):
+    for i in range(dim):
         d, o = data[:, i], output[:, i]
-        print 'Input: (mean, std) = (%f, %f)' % (d.mean(), d.std())
-        print 'Output: (mean, std) = (%f, %f)' % (o.mean(), o.std())
+        print( 'Input: (mean, std) = (%f, %f)' % (d.mean(), d.std()))
+        print( 'Output: (mean, std) = (%f, %f)' % (o.mean(), o.std()))
         assert np.abs(o.mean()) < thresh
         assert np.abs(np.log(o.std())) < thresh
 
@@ -1338,15 +1340,15 @@ def test_batch_norm(thresh=1e-8):
     znormedtest = N2.BatchNorm(ztest, use_ave=True)
     ftest = theano.function([ztest.value], znormedtest.value)
     # check that batching of inputs doesn't matter with use_ave=True
-    output_batches = [ftest(data[i:(i+b)]) for i in xrange(0, n, b)]
+    output_batches = [ftest(data[i:(i+b)]) for i in range(0, n, b)]
     outputs = np.concatenate(output_batches, axis=0)
     output = ftest(data)
     assert np.all(outputs == output)
     thresh = 1e-2
-    for i in xrange(dim):
+    for i in range(dim):
         d, o = data[:, i], output[:, i]
-        print 'Input: (mean, std) = (%f, %f)' % (d.mean(), d.std())
-        print 'Output: (mean, std) = (%f, %f)' % (o.mean(), o.std())
+        print( 'Input: (mean, std) = (%f, %f)' % (d.mean(), d.std()))
+        print( 'Output: (mean, std) = (%f, %f)' % (o.mean(), o.std()))
         assert np.abs(o.mean()) < thresh
         assert np.abs(np.log(o.std())) < thresh
 
@@ -1379,7 +1381,7 @@ def test_dropout():
     assert num_dropped == 0
 
 def test_multifc(n=5, b=100, d_in=500, d_out=1000, n_trials=1000):
-    x = [Output(T.matrix(), shape=(b, d_in)) for _ in xrange(n)]
+    x = [Output(T.matrix(), shape=(b, d_in)) for _ in range(n)]
     x_in = [xi.value for xi in x]
     x_sample = [np.asarray(np.random.rand(*xi.shape), dtype=xi.value.dtype)
                 for xi in x]
@@ -1396,8 +1398,8 @@ def test_multifc(n=5, b=100, d_in=500, d_out=1000, n_trials=1000):
     f_b = theano.function(x_in, y_b.value)
     time_b = Timer(partial(f_b, *x_sample))
     # time them
-    print 'Time A:', time_a.timeit(number=n_trials)
-    print 'Time B:', time_b.timeit(number=n_trials)
+    print( 'Time A:', time_a.timeit(number=n_trials))
+    print ('Time B:', time_b.timeit(number=n_trials))
 
 if __name__ == '__main__':
     test_multifc()
@@ -1405,9 +1407,9 @@ if __name__ == '__main__':
     test_batch_norm()
     images = Output(sharedX(np.zeros([128, 3, 28, 28])))
     D = min_convnet_28(images)[0]
-    print 'D shape =', D.shape
+    print ('D shape =', D.shape)
     latents = Output(sharedX(np.zeros([128, 100])))
     G = min_deconvnet_28(latents)[0]
-    print 'G shape =', G.shape
+    print ('G shape =', G.shape)
     birelu_G = L.BiReLU(G)
-    print 'birelu_G shape =', birelu_G.shape
+    print ('birelu_G shape =', birelu_G.shape)

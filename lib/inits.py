@@ -4,8 +4,8 @@ import numpy as np
 import theano
 import theano.tensor as T
 
-from theano_utils import sharedX, floatX, intX
-from rng import np_rng
+from lib.theano_utils import sharedX, floatX, intX
+from lib.rng import np_rng
 
 class Uniform(object):
     def __init__(self, scale=0.05):
@@ -28,7 +28,7 @@ class Orthogonal(object):
         self.scale = scale
 
     def __call__(self, shape, name=None):
-        print 'called orthogonal init with shape', shape
+        print ('called orthogonal init with shape', shape)
         flat_shape = (shape[0], np.prod(shape[1:]))
         a = np_rng.normal(0.0, 1.0, flat_shape)
         u, _, v = np.linalg.svd(a, full_matrices=False)

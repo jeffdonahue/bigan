@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 
 from lib.data_utils import shuffle
 
-data_dir = './data/mnist'
+data_dir = os.path.join(os.environ["DATADIR"], "mnist") # './data/mnist'
 
 def mnist():
     fd = open(os.path.join(data_dir,'train-images.idx3-ubyte'))

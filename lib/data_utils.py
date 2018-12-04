@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn import utils as skutils
 
-from rng import np_rng, py_rng
+from lib.rng import np_rng, py_rng
 
 def center_crop(x, ph, pw=None):
     if pw is None:
@@ -28,7 +28,7 @@ def list_shuffle(*data):
         return [[d[idx] for idx in idxs] for d in data]
 
 def shuffle(*arrays, **options):
-    if isinstance(arrays[0][0], basestring):
+    if isinstance(arrays[0][0], str):
         return list_shuffle(*arrays)
     else:
         return skutils.shuffle(*arrays, random_state=np_rng)
