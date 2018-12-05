@@ -23,6 +23,7 @@ python train_gan.py \
     --deploy_iters 1000 \
     --disp_samples 400 \
     --disp_interval 25 \
+    --no_disp_one \
     --epochs 200 --decay_epochs 200 \
     --optimizer adam \
     --noise ${NOISE} \

@@ -680,12 +680,15 @@ sample_y = np.array([[i] * num_sample_cols for i in range(ny)],
 sample_inputs = list(sample_z)
 sample_inputs = [z[:num_samples] for z in sample_inputs]
 
-def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
-    start_time = time()
-    kwargs = dict(metric='euclidean')
+def eval_costs(epoch, costs):
     cost_string = '  '.join('%s: %.4f' % o
                             for o in zip(disp_costs.keys(), costs))
     print('%*d) %s' % (len('%d'%total_niter), epoch, cost_string))
+
+
+def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
+    start_time = time()
+    kwargs = dict(metric='euclidean')
     outs = OrderedDict()
     _feats = {}
     def _get_feats(f, x):
@@ -775,7 +778,7 @@ def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
             real_regen = batch_map(_gen, real_enc, wraparound=True)
             dataset.grid_vis(inverse_transform(real_regen), grid_shape, imname(name))
     eval_time = time() - start_time
-    sys.stdout.write('Eval done. (%f seconds)\n' % eval_time)
+    print('Eval done. (%f seconds)\n' % eval_time)
 
 param_groups = dict(
     discrim=discrim_params,
@@ -858,11 +861,11 @@ def deploy():
     for p, _ in deploy_updates:
         p.set_value(0 * p.get_value())
     start_time = time()
-    sys.stdout.write('Running %d deploy update iterations...' % args.deploy_iters)
+    print('Running %d deploy update iterations...' % args.deploy_iters)
     costs = np.mean([_deploy_update(*get_batch(deploy=True))
                      for _ in range(args.deploy_iters)], axis=0)
     deploy_time = time() - start_time
-    sys.stdout.write('done. (%f seconds)\n' % deploy_time)
+    print('done. (%f seconds)\n' % deploy_time)
     return costs
 
 def train():
@@ -872,8 +875,10 @@ def train():
                              if i > start_epoch])
     disp_epochs = frozenset(list(save_epochs) +
                             ([] if args.no_disp_one else [1]))
+     
     if args.disp_interval is None:
         args.disp_interval = total_niter + 1
+    print("Starting training")
     for epoch in range(start_epoch, total_niter + 1):
         do_eval = (epoch % args.disp_interval == 0) or (epoch in disp_epochs)
         do_save = (epoch in save_epochs) or (
@@ -881,7 +886,8 @@ def train():
             (epoch > start_epoch) and
             (epoch % args.save_interval == 0)
         )
-        if do_eval or do_save: costs = deploy()
+        #if do_eval or do_save: 
+        costs = deploy()
         if do_save: save_params(epoch)
         if do_eval: eval_and_disp(epoch, costs)
         if epoch == total_niter:
@@ -897,6 +903,7 @@ def train():
         epoch_time = time() - start_time
         print('Epoch %d: %f seconds (LR = %g)' \
               % (epoch, epoch_time, lrt.get_value()))
+        eval_cost(epoch, costs)
 
 if __name__ == '__main__':
     if (args.weights is not None) or (args.resume is not None):
