@@ -11,7 +11,7 @@ OBJECTIVE="--encode_gen_weight 1 --encode_weight 0 --discrim_weight 0 --joint_di
 # Joint Latent Regressor (Joint LR) objective
 # OBJECTIVE="--encode_gen_weight 0.25 --encode_weight 1 --discrim_weight 1 --joint_discrim_weight 0"
 
-python train_gan.py \
+python -u train_gan.py \
     --encode --encode_normalize \
     --dataset mnist --crop_size 28 \
     --encode_net mnist_mlp \

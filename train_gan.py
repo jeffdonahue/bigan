@@ -409,6 +409,7 @@ if args.encode:
         is_input = dist.dist_sized_slices(args.noise_input_joint_discrim)
         return [z for z, i in zip(z_sample, is_input) if i]
 
+
 def disp(x):
     if isinstance(x, (int, float)):
         return x
@@ -903,7 +904,7 @@ def train():
         epoch_time = time() - start_time
         print('Epoch %d: %f seconds (LR = %g)' \
               % (epoch, epoch_time, lrt.get_value()))
-        eval_cost(epoch, costs)
+        eval_costs(epoch, costs)
 
 if __name__ == '__main__':
     if (args.weights is not None) or (args.resume is not None):
