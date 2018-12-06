@@ -689,6 +689,7 @@ def eval_costs(epoch, costs):
 
 def eval_and_disp(epoch, costs, ng=(10 * megabatch_size)):
     start_time = time()
+    eval_costs(epoch, costs)
     kwargs = dict(metric='euclidean')
     outs = OrderedDict()
     _feats = {}
@@ -887,9 +888,8 @@ def train():
             (epoch > start_epoch) and
             (epoch % args.save_interval == 0)
         )
-        #if do_eval or do_save: 
-        costs = deploy()
-        if do_save: save_params(epoch)
+        if do_eval or do_save: costs = deploy()
+        #if do_save: save_params(epoch)
         if do_eval: eval_and_disp(epoch, costs)
         if epoch == total_niter:
             # on last iteration, only want to eval/disp/save;
@@ -904,7 +904,7 @@ def train():
         epoch_time = time() - start_time
         print('Epoch %d: %f seconds (LR = %g)' \
               % (epoch, epoch_time, lrt.get_value()))
-        eval_costs(epoch, costs)
+        #eval_costs(epoch, costs)
 
 if __name__ == '__main__':
     if (args.weights is not None) or (args.resume is not None):
