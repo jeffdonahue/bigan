@@ -289,6 +289,7 @@ def gen_output_to_enc_input(gX):
 if args.final_lr_mult is None:
     args.final_lr_mult = 0 if args.linear_decay else 0.01
 
+args.exp_dir = os.path.join(args.exp_dir, "bigan_%s_%d" % (args.dataset, int(time())))
 model_dir = '%s/models'%(args.exp_dir,)
 samples_dir = '%s/samples'%(args.exp_dir,)
 for d in [model_dir, samples_dir]:

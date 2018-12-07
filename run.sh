@@ -10,7 +10,7 @@
 #
 # Estimated running time. 
 # The job will be killed when it runs 15 min longer than this time.
-#SBATCH --time=0-17:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --mem=50gb
 #
 ## Resources 
